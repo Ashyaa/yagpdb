@@ -223,7 +223,7 @@ OUTER:
 		select {
 		case <-t.C:
 			p.mu.Lock()
-			toRemove := time.Since(p.lastUpdateTime) > time.Minute
+			toRemove := time.Since(p.lastUpdateTime) > 5*time.Minute
 			p.mu.Unlock()
 			if !toRemove {
 				continue OUTER
