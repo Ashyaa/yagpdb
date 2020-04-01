@@ -4,7 +4,7 @@ WORKDIR $GOPATH/src
 
 
 # Uncomment during development
-# COPY . github.com/jonas747/yagpdb
+COPY . github.com/jonas747/yagpdb
 
 RUN CGO_ENABLED=0 GOOS=linux go get -v \
   github.com/jonas747/yagpdb/cmd/yagpdb
