@@ -15,13 +15,13 @@ import (
 	"github.com/jonas747/yagpdb/common/scheduledevents2"
 
 	// Plugin imports
-	"github.com/Heimdall409/yagpdb/customcommands"
 	"github.com/jonas747/yagpdb/automod"
 	"github.com/jonas747/yagpdb/automod_legacy"
 	"github.com/jonas747/yagpdb/autorole"
 	"github.com/jonas747/yagpdb/aylien"
 	"github.com/jonas747/yagpdb/cah"
 	"github.com/jonas747/yagpdb/commands"
+	"github.com/jonas747/yagpdb/customcommands"
 	"github.com/jonas747/yagpdb/discordlogger"
 	"github.com/jonas747/yagpdb/logs"
 	"github.com/jonas747/yagpdb/moderation"
