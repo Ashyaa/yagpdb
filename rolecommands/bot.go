@@ -52,6 +52,7 @@ func (p *Plugin) AddCommands() {
 		},
 		ArgSwitches: []*dcmd.ArgDef{
 			&dcmd.ArgDef{Switch: "m", Name: "Message ID", Type: &dcmd.IntArg{}},
+			&dcmd.ArgDef{Switch: "c", Name: "Channel ID", Type: &dcmd.IntArg{}},
 			&dcmd.ArgDef{Switch: "nodm", Name: "Disable DM"},
 			&dcmd.ArgDef{Switch: "rr", Name: "Remove role on reaction removed"},
 			&dcmd.ArgDef{Switch: "skip", Name: "Number of roles to skip", Default: 0, Type: dcmd.Int},
@@ -67,7 +68,7 @@ func (p *Plugin) AddCommands() {
 		RequireDiscordPerms: []int64{discordgo.PermissionManageServer},
 		RequiredArgs:        1,
 		Arguments: []*dcmd.ArgDef{
-			&dcmd.ArgDef{Name: "Message ID", Type: dcmd.Int},
+			&dcmd.ArgDef{Name: "Group", Type: dcmd.String},
 		},
 		RunFunc: cmdFuncRoleMenuRemove,
 	}
@@ -81,7 +82,7 @@ func (p *Plugin) AddCommands() {
 		RequireDiscordPerms: []int64{discordgo.PermissionManageServer},
 		RequiredArgs:        1,
 		Arguments: []*dcmd.ArgDef{
-			&dcmd.ArgDef{Name: "Message ID", Type: dcmd.Int},
+			&dcmd.ArgDef{Name: "Group", Type: dcmd.String},
 		},
 		ArgSwitches: []*dcmd.ArgDef{
 			&dcmd.ArgDef{Switch: "nodm", Name: "Disable DM"},
@@ -99,7 +100,7 @@ func (p *Plugin) AddCommands() {
 		RequireDiscordPerms: []int64{discordgo.PermissionManageServer},
 		RequiredArgs:        1,
 		Arguments: []*dcmd.ArgDef{
-			&dcmd.ArgDef{Name: "Message ID", Type: dcmd.Int},
+			&dcmd.ArgDef{Name: "Group", Type: dcmd.String},
 		},
 		RunFunc: cmdFuncRoleMenuResetReactions,
 	}
@@ -113,7 +114,7 @@ func (p *Plugin) AddCommands() {
 		RequireDiscordPerms: []int64{discordgo.PermissionManageServer},
 		RequiredArgs:        1,
 		Arguments: []*dcmd.ArgDef{
-			&dcmd.ArgDef{Name: "Message ID", Type: dcmd.Int},
+			&dcmd.ArgDef{Name: "Group", Type: dcmd.String},
 		},
 		RunFunc: cmdFuncRoleMenuEditOption,
 	}
@@ -127,7 +128,7 @@ func (p *Plugin) AddCommands() {
 		RequireDiscordPerms: []int64{discordgo.PermissionManageServer},
 		RequiredArgs:        1,
 		Arguments: []*dcmd.ArgDef{
-			&dcmd.ArgDef{Name: "Message ID", Type: dcmd.Int},
+			&dcmd.ArgDef{Name: "Group", Type: dcmd.String},
 		},
 		RunFunc: cmdFuncRoleMenuComplete,
 	}
