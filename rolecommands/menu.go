@@ -683,8 +683,8 @@ func messageRemoved(ctx context.Context, id int64) {
 	}
 }
 
-func FindRolemenuFull(ctx context.Context, mID int64, cID int64, guildID int64) (*models.RoleMenu, error) {
-	return models.RoleMenus(qm.Where("guild_id = ? AND channel_id = ? and (message_id = ? OR setup_msg_id = ?)", guildID, cID, mID, mID), qm.Load("RoleMenuOptions.RoleCommand"), qm.Load("RoleGroup.RoleCommands")).OneG(ctx)
+func FindRolemenuFull(ctx context.Context, mID int64, guildID int64) (*models.RoleMenu, error) {
+	return models.RoleMenus(qm.Where("guild_id = ? and (message_id = ? OR setup_msg_id = ?)", guildID, mID, mID), qm.Load("RoleMenuOptions.RoleCommand"), qm.Load("RoleGroup.RoleCommands")).OneG(ctx)
 }
 
 func FindRolemenuByName(ctx context.Context, name string, guildID int64) (*models.RoleMenu, error) {
