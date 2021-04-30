@@ -58,6 +58,8 @@ ALTER TABLE role_menus ADD COLUMN IF NOT EXISTS skip_amount INT NOT NULL DEFAULT
 `, `
 ALTER TABLE role_menus ADD COLUMN IF NOT EXISTS setup_msg_id BIGINT NOT NULL DEFAULT 0;
 `, `
+ALTER TABLE role_menus ADD COLUMN IF NOT EXISTS setup_msg_channel_id BIGINT NOT NULL DEFAULT 0;
+`, `
 ALTER TABLE role_menus ADD COLUMN IF NOT EXISTS standalone_mode SMALLINT;
 `, `
 ALTER TABLE role_menus ADD COLUMN IF NOT EXISTS standalone_multiple_min INT;

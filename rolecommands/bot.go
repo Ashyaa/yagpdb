@@ -58,6 +58,7 @@ func (p *Plugin) AddCommands() {
 			&dcmd.ArgDef{Switch: "nodm", Name: "Disable DM"},
 			&dcmd.ArgDef{Switch: "rr", Name: "Remove role on reaction removed"},
 			&dcmd.ArgDef{Switch: "skip", Name: "Number of roles to skip", Default: 0, Type: dcmd.Int},
+			&dcmd.ArgDef{Switch: "ll", Name: "Toggle local logging: show guiding messages in the role menu channel"},
 		},
 		RunFunc: cmdFuncRoleMenuCreate,
 	}
@@ -89,6 +90,7 @@ func (p *Plugin) AddCommands() {
 		ArgSwitches: []*dcmd.ArgDef{
 			&dcmd.ArgDef{Switch: "nodm", Name: "Disable DM"},
 			&dcmd.ArgDef{Switch: "rr", Name: "Remove role on reaction removed"},
+			&dcmd.ArgDef{Switch: "ll", Name: "Toggle local logging: show guiding messages in the role menu channel"},
 		},
 		RunFunc: cmdFuncRoleMenuUpdate,
 	}

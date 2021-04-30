@@ -48,6 +48,11 @@ func cmdFuncRoleMenuCreate(parsed *dcmd.Data) (interface{}, error) {
 		channelID = parsed.Switches["c"].Int64()
 	}
 
+	setupMsgChannelID := parsed.Msg.ChannelID
+	if parsed.Switches["ll"].Value != nil && parsed.Switches["ll"].Value.(bool) {
+		setupMsgChannelID = channelID
+	}
+
 	model := &models.RoleMenu{
 		GuildID:   parsed.GS.ID,
 		OwnerID:   parsed.Msg.Author.ID,
@@ -58,6 +63,8 @@ func cmdFuncRoleMenuCreate(parsed *dcmd.Data) (interface{}, error) {
 		DisableSendDM:              parsed.Switches["nodm"].Value != nil && parsed.Switches["nodm"].Value.(bool),
 		RemoveRoleOnReactionRemove: true,
 		SkipAmount:                 skipAmount,
+
+		SetupMSGChannelID: setupMsgChannelID,
 	}
 
 	var msg *discordgo.Message
@@ -74,7 +81,7 @@ func cmdFuncRoleMenuCreate(parsed *dcmd.Data) (interface{}, error) {
 	} else {
 
 		// set up the message if not provided
-		msg, err = common.BotSession.ChannelMessageSend(parsed.CS.ID, "Role menu\nSetting up...")
+		msg, err = common.BotSession.ChannelMessageSend(channelID, "Role menu\nSetting up...")
 		if err != nil {
 			_, dErr := common.DiscordError(err)
 			errStr := "Failed creating the menu message, check the permissions on the channel"
@@ -112,7 +119,11 @@ func cmdFuncRoleMenuUpdate(data *dcmd.Data) (interface{}, error) {
 	if err != nil {
 		return "Couldn't find menu", nil
 	}
-
+	setupMsgChannelID := data.Msg.ChannelID
+	if data.Switches["ll"].Value != nil && data.Switches["ll"].Value.(bool) {
+		setupMsgChannelID = menu.ChannelID
+	}
+	menu.SetupMSGChannelID = setupMsgChannelID
 	return UpdateMenu(data, menu)
 }
 
@@ -881,7 +892,7 @@ func updateSetupMessage(ctx context.Context, rm *models.RoleMenu, msgContents st
 		return
 	}
 
-	_, err := common.BotSession.ChannelMessageEdit(rm.ChannelID, rm.SetupMSGID, msgContents)
+	_, err := common.BotSession.ChannelMessageEdit(rm.SetupMSGChannelID, rm.SetupMSGID, msgContents)
 	if err != nil {
 		createSetupMessage(ctx, rm, msgContents, true)
 		return
@@ -891,7 +902,7 @@ func updateSetupMessage(ctx context.Context, rm *models.RoleMenu, msgContents st
 func createSetupMessage(ctx context.Context, rm *models.RoleMenu, msgContents string, updateModel bool) {
 	msgContents = "**Rolemenu setup:** " + msgContents
 
-	msg, err := common.BotSession.ChannelMessageSend(rm.ChannelID, msgContents)
+	msg, err := common.BotSession.ChannelMessageSend(rm.SetupMSGChannelID, msgContents)
 	if err != nil {
 		logger.WithError(err).WithField("rm_id", rm.MessageID).WithField("guild", rm.GuildID).Error("failed creating setup message for menu")
 		return

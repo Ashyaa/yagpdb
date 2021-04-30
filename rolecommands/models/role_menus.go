@@ -38,6 +38,8 @@ type RoleMenu struct {
 	FixedAmount                   bool             `boil:"fixed_amount" json:"fixed_amount" toml:"fixed_amount" yaml:"fixed_amount"`
 	SkipAmount                    int              `boil:"skip_amount" json:"skip_amount" toml:"skip_amount" yaml:"skip_amount"`
 	SetupMSGID                    int64            `boil:"setup_msg_id" json:"setup_msg_id" toml:"setup_msg_id" yaml:"setup_msg_id"`
+	EditingOptionID               null.Int64       `boil:"editing_option_id" json:"editing_option_id,omitempty" toml:"editing_option_id" yaml:"editing_option_id,omitempty"`
+	StandaloneMode                null.Int16       `boil:"standalone_mode" json:"standalone_mode,omitempty" toml:"standalone_mode" yaml:"standalone_mode,omitempty"`
 	StandaloneMultipleMin         null.Int         `boil:"standalone_multiple_min" json:"standalone_multiple_min,omitempty" toml:"standalone_multiple_min" yaml:"standalone_multiple_min,omitempty"`
 	StandaloneMultipleMax         null.Int         `boil:"standalone_multiple_max" json:"standalone_multiple_max,omitempty" toml:"standalone_multiple_max" yaml:"standalone_multiple_max,omitempty"`
 	StandaloneSingleAutoToggleOff null.Bool        `boil:"standalone_single_auto_toggle_off" json:"standalone_single_auto_toggle_off,omitempty" toml:"standalone_single_auto_toggle_off" yaml:"standalone_single_auto_toggle_off,omitempty"`
@@ -46,9 +48,8 @@ type RoleMenu struct {
 	StandaloneWhitelistRoles      types.Int64Array `boil:"standalone_whitelist_roles" json:"standalone_whitelist_roles,omitempty" toml:"standalone_whitelist_roles" yaml:"standalone_whitelist_roles,omitempty"`
 	SavedContent                  null.String      `boil:"saved_content" json:"saved_content,omitempty" toml:"saved_content" yaml:"saved_content,omitempty"`
 	SavedEmbed                    null.String      `boil:"saved_embed" json:"saved_embed,omitempty" toml:"saved_embed" yaml:"saved_embed,omitempty"`
-	EditingOptionID               null.Int64       `boil:"editing_option_id" json:"editing_option_id,omitempty" toml:"editing_option_id" yaml:"editing_option_id,omitempty"`
 	Kind                          int16            `boil:"kind" json:"kind" toml:"kind" yaml:"kind"`
-	StandaloneMode                null.Int16       `boil:"standalone_mode" json:"standalone_mode,omitempty" toml:"standalone_mode" yaml:"standalone_mode,omitempty"`
+	SetupMSGChannelID             int64            `boil:"setup_msg_channel_id" json:"setup_msg_channel_id" toml:"setup_msg_channel_id" yaml:"setup_msg_channel_id"`
 
 	R *roleMenuR `boil:"-" json:"-" toml:"-" yaml:"-"`
 	L roleMenuL  `boil:"-" json:"-" toml:"-" yaml:"-"`
@@ -68,6 +69,8 @@ var RoleMenuColumns = struct {
 	FixedAmount                   string
 	SkipAmount                    string
 	SetupMSGID                    string
+	EditingOptionID               string
+	StandaloneMode                string
 	StandaloneMultipleMin         string
 	StandaloneMultipleMax         string
 	StandaloneSingleAutoToggleOff string
@@ -76,9 +79,8 @@ var RoleMenuColumns = struct {
 	StandaloneWhitelistRoles      string
 	SavedContent                  string
 	SavedEmbed                    string
-	EditingOptionID               string
 	Kind                          string
-	StandaloneMode                string
+	SetupMSGChannelID             string
 }{
 	MessageID:                     "message_id",
 	GuildID:                       "guild_id",
@@ -93,6 +95,8 @@ var RoleMenuColumns = struct {
 	FixedAmount:                   "fixed_amount",
 	SkipAmount:                    "skip_amount",
 	SetupMSGID:                    "setup_msg_id",
+	EditingOptionID:               "editing_option_id",
+	StandaloneMode:                "standalone_mode",
 	StandaloneMultipleMin:         "standalone_multiple_min",
 	StandaloneMultipleMax:         "standalone_multiple_max",
 	StandaloneSingleAutoToggleOff: "standalone_single_auto_toggle_off",
@@ -101,12 +105,34 @@ var RoleMenuColumns = struct {
 	StandaloneWhitelistRoles:      "standalone_whitelist_roles",
 	SavedContent:                  "saved_content",
 	SavedEmbed:                    "saved_embed",
-	EditingOptionID:               "editing_option_id",
 	Kind:                          "kind",
-	StandaloneMode:                "standalone_mode",
+	SetupMSGChannelID:             "setup_msg_channel_id",
 }
 
 // Generated where
+
+type whereHelpernull_Int16 struct{ field string }
+
+func (w whereHelpernull_Int16) EQ(x null.Int16) qm.QueryMod {
+	return qmhelper.WhereNullEQ(w.field, false, x)
+}
+func (w whereHelpernull_Int16) NEQ(x null.Int16) qm.QueryMod {
+	return qmhelper.WhereNullEQ(w.field, true, x)
+}
+func (w whereHelpernull_Int16) IsNull() qm.QueryMod    { return qmhelper.WhereIsNull(w.field) }
+func (w whereHelpernull_Int16) IsNotNull() qm.QueryMod { return qmhelper.WhereIsNotNull(w.field) }
+func (w whereHelpernull_Int16) LT(x null.Int16) qm.QueryMod {
+	return qmhelper.Where(w.field, qmhelper.LT, x)
+}
+func (w whereHelpernull_Int16) LTE(x null.Int16) qm.QueryMod {
+	return qmhelper.Where(w.field, qmhelper.LTE, x)
+}
+func (w whereHelpernull_Int16) GT(x null.Int16) qm.QueryMod {
+	return qmhelper.Where(w.field, qmhelper.GT, x)
+}
+func (w whereHelpernull_Int16) GTE(x null.Int16) qm.QueryMod {
+	return qmhelper.Where(w.field, qmhelper.GTE, x)
+}
 
 type whereHelpernull_Int struct{ field string }
 
@@ -200,29 +226,6 @@ func (w whereHelperint16) NIN(slice []int16) qm.QueryMod {
 	return qm.WhereNotIn(fmt.Sprintf("%s NOT IN ?", w.field), values...)
 }
 
-type whereHelpernull_Int16 struct{ field string }
-
-func (w whereHelpernull_Int16) EQ(x null.Int16) qm.QueryMod {
-	return qmhelper.WhereNullEQ(w.field, false, x)
-}
-func (w whereHelpernull_Int16) NEQ(x null.Int16) qm.QueryMod {
-	return qmhelper.WhereNullEQ(w.field, true, x)
-}
-func (w whereHelpernull_Int16) IsNull() qm.QueryMod    { return qmhelper.WhereIsNull(w.field) }
-func (w whereHelpernull_Int16) IsNotNull() qm.QueryMod { return qmhelper.WhereIsNotNull(w.field) }
-func (w whereHelpernull_Int16) LT(x null.Int16) qm.QueryMod {
-	return qmhelper.Where(w.field, qmhelper.LT, x)
-}
-func (w whereHelpernull_Int16) LTE(x null.Int16) qm.QueryMod {
-	return qmhelper.Where(w.field, qmhelper.LTE, x)
-}
-func (w whereHelpernull_Int16) GT(x null.Int16) qm.QueryMod {
-	return qmhelper.Where(w.field, qmhelper.GT, x)
-}
-func (w whereHelpernull_Int16) GTE(x null.Int16) qm.QueryMod {
-	return qmhelper.Where(w.field, qmhelper.GTE, x)
-}
-
 var RoleMenuWhere = struct {
 	MessageID                     whereHelperint64
 	GuildID                       whereHelperint64
@@ -237,6 +240,8 @@ var RoleMenuWhere = struct {
 	FixedAmount                   whereHelperbool
 	SkipAmount                    whereHelperint
 	SetupMSGID                    whereHelperint64
+	EditingOptionID               whereHelpernull_Int64
+	StandaloneMode                whereHelpernull_Int16
 	StandaloneMultipleMin         whereHelpernull_Int
 	StandaloneMultipleMax         whereHelpernull_Int
 	StandaloneSingleAutoToggleOff whereHelpernull_Bool
@@ -245,9 +250,8 @@ var RoleMenuWhere = struct {
 	StandaloneWhitelistRoles      whereHelpertypes_Int64Array
 	SavedContent                  whereHelpernull_String
 	SavedEmbed                    whereHelpernull_String
-	EditingOptionID               whereHelpernull_Int64
 	Kind                          whereHelperint16
-	StandaloneMode                whereHelpernull_Int16
+	SetupMSGChannelID             whereHelperint64
 }{
 	MessageID:                     whereHelperint64{field: "\"role_menus\".\"message_id\""},
 	GuildID:                       whereHelperint64{field: "\"role_menus\".\"guild_id\""},
@@ -262,6 +266,8 @@ var RoleMenuWhere = struct {
 	FixedAmount:                   whereHelperbool{field: "\"role_menus\".\"fixed_amount\""},
 	SkipAmount:                    whereHelperint{field: "\"role_menus\".\"skip_amount\""},
 	SetupMSGID:                    whereHelperint64{field: "\"role_menus\".\"setup_msg_id\""},
+	EditingOptionID:               whereHelpernull_Int64{field: "\"role_menus\".\"editing_option_id\""},
+	StandaloneMode:                whereHelpernull_Int16{field: "\"role_menus\".\"standalone_mode\""},
 	StandaloneMultipleMin:         whereHelpernull_Int{field: "\"role_menus\".\"standalone_multiple_min\""},
 	StandaloneMultipleMax:         whereHelpernull_Int{field: "\"role_menus\".\"standalone_multiple_max\""},
 	StandaloneSingleAutoToggleOff: whereHelpernull_Bool{field: "\"role_menus\".\"standalone_single_auto_toggle_off\""},
@@ -270,9 +276,8 @@ var RoleMenuWhere = struct {
 	StandaloneWhitelistRoles:      whereHelpertypes_Int64Array{field: "\"role_menus\".\"standalone_whitelist_roles\""},
 	SavedContent:                  whereHelpernull_String{field: "\"role_menus\".\"saved_content\""},
 	SavedEmbed:                    whereHelpernull_String{field: "\"role_menus\".\"saved_embed\""},
-	EditingOptionID:               whereHelpernull_Int64{field: "\"role_menus\".\"editing_option_id\""},
 	Kind:                          whereHelperint16{field: "\"role_menus\".\"kind\""},
-	StandaloneMode:                whereHelpernull_Int16{field: "\"role_menus\".\"standalone_mode\""},
+	SetupMSGChannelID:             whereHelperint64{field: "\"role_menus\".\"setup_msg_channel_id\""},
 }
 
 // RoleMenuRels is where relationship names are stored.
@@ -305,9 +310,9 @@ func (*roleMenuR) NewStruct() *roleMenuR {
 type roleMenuL struct{}
 
 var (
-	roleMenuAllColumns            = []string{"message_id", "guild_id", "channel_id", "owner_id", "own_message", "state", "next_role_command_id", "role_group_id", "disable_send_dm", "remove_role_on_reaction_remove", "fixed_amount", "skip_amount", "setup_msg_id", "standalone_multiple_min", "standalone_multiple_max", "standalone_single_auto_toggle_off", "standalone_single_require_one", "standalone_blacklist_roles", "standalone_whitelist_roles", "saved_content", "saved_embed", "editing_option_id", "kind", "standalone_mode"}
-	roleMenuColumnsWithoutDefault = []string{"message_id", "guild_id", "channel_id", "owner_id", "own_message", "state", "next_role_command_id", "role_group_id", "standalone_multiple_min", "standalone_multiple_max", "standalone_single_auto_toggle_off", "standalone_single_require_one", "standalone_blacklist_roles", "standalone_whitelist_roles", "saved_content", "saved_embed", "editing_option_id", "standalone_mode"}
-	roleMenuColumnsWithDefault    = []string{"disable_send_dm", "remove_role_on_reaction_remove", "fixed_amount", "skip_amount", "setup_msg_id", "kind"}
+	roleMenuAllColumns            = []string{"message_id", "guild_id", "channel_id", "owner_id", "own_message", "state", "next_role_command_id", "role_group_id", "disable_send_dm", "remove_role_on_reaction_remove", "fixed_amount", "skip_amount", "setup_msg_id", "editing_option_id", "standalone_mode", "standalone_multiple_min", "standalone_multiple_max", "standalone_single_auto_toggle_off", "standalone_single_require_one", "standalone_blacklist_roles", "standalone_whitelist_roles", "saved_content", "saved_embed", "kind", "setup_msg_channel_id"}
+	roleMenuColumnsWithoutDefault = []string{"message_id", "guild_id", "channel_id", "owner_id", "own_message", "state", "next_role_command_id", "role_group_id", "editing_option_id", "standalone_mode", "standalone_multiple_min", "standalone_multiple_max", "standalone_single_auto_toggle_off", "standalone_single_require_one", "standalone_blacklist_roles", "standalone_whitelist_roles", "saved_content", "saved_embed"}
+	roleMenuColumnsWithDefault    = []string{"disable_send_dm", "remove_role_on_reaction_remove", "fixed_amount", "skip_amount", "setup_msg_id", "kind", "setup_msg_channel_id"}
 	roleMenuPrimaryKeyColumns     = []string{"message_id"}
 )
 
