@@ -4,7 +4,7 @@ import (
 	"context"
 	"database/sql"
 
-	"github.com/jonas747/dcmd"
+	"github.com/jonas747/dcmd/v2"
 	"github.com/jonas747/discordgo"
 	"github.com/jonas747/dstate/v2"
 	"github.com/jonas747/yagpdb/analytics"
@@ -36,7 +36,7 @@ func (p *Plugin) AddCommands() {
 			Name:        "Role",
 			Description: "Toggle a role on yourself or list all available roles, they have to be set up in the control panel first, under 'rolecommands' ",
 			Arguments: []*dcmd.ArgDef{
-				&dcmd.ArgDef{Name: "Role", Type: dcmd.String},
+				{Name: "Role", Type: dcmd.String},
 			},
 			RunFunc: CmdFuncRole,
 		})
@@ -50,15 +50,15 @@ func (p *Plugin) AddCommands() {
 		RequireDiscordPerms: []int64{discordgo.PermissionManageServer},
 		RequiredArgs:        1,
 		Arguments: []*dcmd.ArgDef{
-			&dcmd.ArgDef{Name: "Group", Type: dcmd.String},
+			{Name: "Group", Type: dcmd.String},
 		},
 		ArgSwitches: []*dcmd.ArgDef{
-			&dcmd.ArgDef{Switch: "m", Name: "Message ID", Type: &dcmd.IntArg{}},
-			&dcmd.ArgDef{Switch: "c", Name: "Channel ID", Type: &dcmd.IntArg{}},
-			&dcmd.ArgDef{Switch: "nodm", Name: "Disable DM"},
-			&dcmd.ArgDef{Switch: "rr", Name: "Remove role on reaction removed"},
-			&dcmd.ArgDef{Switch: "skip", Name: "Number of roles to skip", Default: 0, Type: dcmd.Int},
-			&dcmd.ArgDef{Switch: "ll", Name: "Toggle local logging: show guiding messages in the role menu channel"},
+			{Name: "m", Help: "Message ID", Type: dcmd.BigInt},
+			{Name: "c", Help: "Channel ID", Type: dcmd.BigInt},
+			{Name: "nodm", Help: "Disable DM"},
+			{Name: "rr", Help: "Remove role on reaction removed"},
+			{Name: "skip", Help: "Number of roles to skip", Default: 0, Type: dcmd.Int},
+			{Name: "ll", Help: "Toggle local logging: show guiding messages in the role menu channel"},
 		},
 		RunFunc: cmdFuncRoleMenuCreate,
 	}
@@ -71,7 +71,7 @@ func (p *Plugin) AddCommands() {
 		RequireDiscordPerms: []int64{discordgo.PermissionManageServer},
 		RequiredArgs:        1,
 		Arguments: []*dcmd.ArgDef{
-			&dcmd.ArgDef{Name: "Group", Type: dcmd.String},
+			{Name: "Group", Type: dcmd.String},
 		},
 		RunFunc: cmdFuncRoleMenuRemove,
 	}
@@ -85,12 +85,12 @@ func (p *Plugin) AddCommands() {
 		RequireDiscordPerms: []int64{discordgo.PermissionManageServer},
 		RequiredArgs:        1,
 		Arguments: []*dcmd.ArgDef{
-			&dcmd.ArgDef{Name: "Group", Type: dcmd.String},
+			{Name: "Group", Type: dcmd.String},
 		},
 		ArgSwitches: []*dcmd.ArgDef{
-			&dcmd.ArgDef{Switch: "nodm", Name: "Disable DM"},
-			&dcmd.ArgDef{Switch: "rr", Name: "Remove role on reaction removed"},
-			&dcmd.ArgDef{Switch: "ll", Name: "Toggle local logging: show guiding messages in the role menu channel"},
+			{Name: "nodm", Help: "Disable DM"},
+			{Name: "rr", Help: "Remove role on reaction removed"},
+			{Name: "ll", Help: "Toggle local logging: show guiding messages in the role menu channel"},
 		},
 		RunFunc: cmdFuncRoleMenuUpdate,
 	}
@@ -104,7 +104,7 @@ func (p *Plugin) AddCommands() {
 		RequireDiscordPerms: []int64{discordgo.PermissionManageServer},
 		RequiredArgs:        1,
 		Arguments: []*dcmd.ArgDef{
-			&dcmd.ArgDef{Name: "Group", Type: dcmd.String},
+			{Name: "Group", Type: dcmd.String},
 		},
 		RunFunc: cmdFuncRoleMenuResetReactions,
 	}
@@ -118,7 +118,7 @@ func (p *Plugin) AddCommands() {
 		RequireDiscordPerms: []int64{discordgo.PermissionManageServer},
 		RequiredArgs:        1,
 		Arguments: []*dcmd.ArgDef{
-			&dcmd.ArgDef{Name: "Group", Type: dcmd.String},
+			{Name: "Group", Type: dcmd.String},
 		},
 		RunFunc: cmdFuncRoleMenuEditOption,
 	}
@@ -132,12 +132,13 @@ func (p *Plugin) AddCommands() {
 		RequireDiscordPerms: []int64{discordgo.PermissionManageServer},
 		RequiredArgs:        1,
 		Arguments: []*dcmd.ArgDef{
-			&dcmd.ArgDef{Name: "Group", Type: dcmd.String},
+			{Name: "Group", Type: dcmd.String},
 		},
 		RunFunc: cmdFuncRoleMenuComplete,
 	}
 
 	menuContainer := commands.CommandSystem.Root.Sub("RoleMenu", "rmenu")
+	menuContainer.Description = "Command for managing role menus"
 
 	const notFoundMessage = "Unknown rolemenu command, if you've used this before it was recently revamped.\nTry almost the same command but `rolemenu create ...` and `rolemenu update ...` instead (replace '...' with the rest of the command).\nSee `help rolemenu` for all rolemenu commands."
 	menuContainer.NotFound = commands.CommonContainerNotFoundHandler(menuContainer, notFoundMessage)
@@ -148,6 +149,9 @@ func (p *Plugin) AddCommands() {
 	menuContainer.AddCommand(cmdResetReactions, cmdResetReactions.GetTrigger())
 	menuContainer.AddCommand(cmdEditOption, cmdEditOption.GetTrigger())
 	menuContainer.AddCommand(cmdFinishSetup, cmdFinishSetup.GetTrigger())
+	commands.RegisterSlashCommandsContainer(menuContainer, true, func(gs *dstate.GuildState) ([]int64, error) {
+		return nil, nil
+	})
 }
 
 type ScheduledMemberRoleRemoveData struct {
@@ -180,7 +184,7 @@ func CmdFuncRole(parsed *dcmd.Data) (interface{}, error) {
 		return CmdFuncListCommands(parsed)
 	}
 
-	given, err := FindToggleRole(parsed.Context(), parsed.MS, parsed.Args[0].Str())
+	given, err := FindToggleRole(parsed.Context(), parsed.GuildData.MS, parsed.Args[0].Str())
 	if err != nil {
 		if err == sql.ErrNoRows {
 			resp, err := CmdFuncListCommands(parsed)
@@ -191,10 +195,10 @@ func CmdFuncRole(parsed *dcmd.Data) (interface{}, error) {
 			return resp, err
 		}
 
-		return HumanizeAssignError(parsed.GS, err)
+		return HumanizeAssignError(parsed.GuildData.GS, err)
 	}
 
-	go analytics.RecordActiveUnit(parsed.GS.ID, &Plugin{}, "cmd_used")
+	go analytics.RecordActiveUnit(parsed.GuildData.GS.ID, &Plugin{}, "cmd_used")
 
 	if given {
 		return "Gave you the role!", nil
@@ -229,7 +233,7 @@ func HumanizeAssignError(guild *dstate.GuildState, err error) (string, error) {
 }
 
 func CmdFuncListCommands(parsed *dcmd.Data) (interface{}, error) {
-	_, grouped, ungrouped, err := GetAllRoleCommandsSorted(parsed.Context(), parsed.GS.ID)
+	_, grouped, ungrouped, err := GetAllRoleCommandsSorted(parsed.Context(), parsed.GuildData.GS.ID)
 	if err != nil {
 		return "Failed retrieving role commands", err
 	}
