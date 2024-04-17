@@ -17,14 +17,14 @@ import (
 	"github.com/mediocregopher/radix/v3"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
-	"github.com/volatiletech/null"
+	"github.com/volatiletech/null/v8"
 
 	"emperror.dev/errors"
-	"github.com/jonas747/discordgo"
-	"github.com/jonas747/yagpdb/bot"
-	"github.com/jonas747/yagpdb/common"
-	"github.com/jonas747/yagpdb/common/scheduledevents2/models"
-	"github.com/volatiletech/sqlboiler/boil"
+	"github.com/botlabs-gg/yagpdb/v2/bot"
+	"github.com/botlabs-gg/yagpdb/v2/common"
+	"github.com/botlabs-gg/yagpdb/v2/common/scheduledevents2/models"
+	"github.com/botlabs-gg/yagpdb/v2/lib/discordgo"
+	"github.com/volatiletech/sqlboiler/v4/boil"
 )
 
 type ScheduledEvents struct {
@@ -160,7 +160,7 @@ func (se *ScheduledEvents) check() {
 	defer se.currentlyProcessingMU.Unlock()
 
 	var pairs []string
-	err := common.RedisPool.Do(radix.FlatCmd(&pairs, "ZRANGEBYSCORE", "scheduled_events_soon", "-inf", time.Now().UTC().Unix()))
+	err := common.RedisPool.Do(radix.FlatCmd(&pairs, "ZRANGEBYSCORE", "scheduled_events_soon", "-inf", time.Now().UTC().UnixMicro()))
 	if err != nil {
 		logger.WithError(err).Error("failed checking for scheduled events to process")
 		return
@@ -219,7 +219,7 @@ func (se *ScheduledEvents) checkShouldSkipRemove(id int64, guildID int64) (skip 
 	}
 
 	// make sure the guild is available
-	gs := bot.State.Guild(true, guildID)
+	gs := bot.State.GetGuild(guildID)
 	if gs == nil {
 		onGuild, err := common.BotIsOnGuild(guildID)
 		if err != nil {
@@ -232,11 +232,7 @@ func (se *ScheduledEvents) checkShouldSkipRemove(id int64, guildID int64) (skip 
 		return true, false
 	}
 
-	gs.RLock()
-	unavailable := gs.Guild.Unavailable
-	gs.RUnlock()
-
-	if unavailable {
+	if !gs.Available {
 		// wait until the guild is available before handling this event
 		return true, false
 	}

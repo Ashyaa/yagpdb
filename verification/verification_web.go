@@ -2,6 +2,7 @@ package verification
 
 import (
 	"database/sql"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"html"
@@ -11,25 +12,31 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/jonas747/yagpdb/analytics"
-	"github.com/jonas747/yagpdb/common"
-	"github.com/jonas747/yagpdb/common/cplogs"
-	"github.com/jonas747/yagpdb/common/scheduledevents2"
-	"github.com/jonas747/yagpdb/verification/models"
-	"github.com/jonas747/yagpdb/web"
-	"github.com/microcosm-cc/bluemonday"
+	"github.com/botlabs-gg/yagpdb/v2/analytics"
+	"github.com/botlabs-gg/yagpdb/v2/common"
+	"github.com/botlabs-gg/yagpdb/v2/common/cplogs"
+	"github.com/botlabs-gg/yagpdb/v2/common/scheduledevents2"
+	"github.com/botlabs-gg/yagpdb/v2/verification/models"
+	"github.com/botlabs-gg/yagpdb/v2/web"
 	"github.com/russross/blackfriday"
-	"github.com/volatiletech/null"
-	"github.com/volatiletech/sqlboiler/boil"
+	"github.com/sirupsen/logrus"
+	"github.com/volatiletech/null/v8"
+	"github.com/volatiletech/sqlboiler/v4/boil"
 	"goji.io/pat"
 )
 
+//go:embed assets/verification_control_panel.html
+var PageHTMLControlPanel string
+
+//go:embed assets/verification_verify_page.html
+var PageHTMLVerifyPage string
+
 type FormData struct {
 	Enabled             bool
-	VerifiedRole        int64  `valid:"role"`
+	VerifiedRole        int64  `valid:"role,true"`
 	PageContent         string `valid:",10000"`
-	KickUnverifiedAfter int
-	WarnUnverifiedAfter int
+	KickUnverifiedAfter int    `valid:"0,"`
+	WarnUnverifiedAfter int    `valid:"0,"`
 	WarnMessage         string `valid:"template,10000"`
 	DMMessage           string `valid:"template,10000"`
 	LogChannel          int64  `valid:"channel,true"`
@@ -38,10 +45,10 @@ type FormData struct {
 var panelLogKey = cplogs.RegisterActionFormat(&cplogs.ActionFormat{Key: "verification_updated_settings", FormatString: "Updated verification settings"})
 
 func (p *Plugin) InitWeb() {
-	web.LoadHTMLTemplate("../../verification/assets/verification_control_panel.html", "templates/plugins/verification_control_panel.html")
-	web.LoadHTMLTemplate("../../verification/assets/verification_verify_page.html", "templates/plugins/verification_verify_page.html")
+	web.AddHTMLTemplate("verification/assets/verification_control_panel.html", PageHTMLControlPanel)
+	web.AddHTMLTemplate("verification/assets/verification_verify_page.html", PageHTMLVerifyPage)
 
-	web.AddSidebarItem(web.SidebarCategoryTools, &web.SidebarItem{
+	web.AddSidebarItem(web.SidebarCategoryModeration, &web.SidebarItem{
 		Name: "Verification",
 		URL:  "verification",
 		Icon: "fas fa-address-card",
@@ -73,12 +80,21 @@ func (p *Plugin) handleGetSettings(w http.ResponseWriter, r *http.Request) (web.
 		err = nil
 	}
 
+	roleInvalid := true
+	for _, role := range g.Roles {
+		if role.ID == settings.VerifiedRole {
+			roleInvalid = false
+			break
+		}
+	}
+
 	if settings != nil && settings.DMMessage == "" {
 		settings.DMMessage = DefaultDMMessage
 	}
 
 	templateData["DefaultPageContent"] = DefaultPageContent
 	templateData["PluginSettings"] = settings
+	templateData["RoleInvalid"] = roleInvalid
 
 	return templateData, err
 }
@@ -161,7 +177,7 @@ func (p *Plugin) handleGetVerifyPage(w http.ResponseWriter, r *http.Request) (we
 	}
 
 	unsafe := blackfriday.MarkdownCommon([]byte(msg))
-	html := bluemonday.UGCPolicy().SanitizeBytes(unsafe)
+	html := common.UGCHtmlPolicy.SanitizeBytes(unsafe)
 	templateData["RenderedPageContent"] = template.HTML(html)
 
 	return templateData, nil
@@ -189,6 +205,9 @@ func (p *Plugin) handlePostVerifyPage(w http.ResponseWriter, r *http.Request) (w
 	}
 
 	valid, err := p.checkCAPTCHAResponse(r.FormValue("g-recaptcha-response"))
+	if err != nil {
+		logrus.WithError(err).Error("Failed recaptcha response")
+	}
 
 	token := pat.Param(r, "token")
 	userID, _ := strconv.ParseInt(pat.Param(r, "user_id"), 10, 64)
@@ -317,7 +336,7 @@ func (p *Plugin) LoadServerHomeWidget(w http.ResponseWriter, r *http.Request) (w
 
 	roleStr := "none / unknown"
 	indicatorRole := ""
-	if role := ag.Role(settings.VerifiedRole); role != nil {
+	if role := ag.GetRole(settings.VerifiedRole); role != nil {
 		roleStr = html.EscapeString(role.Name)
 		indicatorRole = web.Indicator(true)
 	} else {

@@ -4,22 +4,23 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/jonas747/dcmd/v2"
-	"github.com/jonas747/yagpdb/bot"
-	"github.com/jonas747/yagpdb/bot/eventsystem"
-	"github.com/jonas747/yagpdb/commands"
+	"github.com/botlabs-gg/yagpdb/v2/bot"
+	"github.com/botlabs-gg/yagpdb/v2/bot/eventsystem"
+	"github.com/botlabs-gg/yagpdb/v2/commands"
+	"github.com/botlabs-gg/yagpdb/v2/lib/dcmd"
+	"github.com/botlabs-gg/yagpdb/v2/stdcommands/util"
 )
 
 var Command = &commands.YAGCommand{
 	Cooldown:     2,
 	CmdCategory:  commands.CategoryDebug,
 	Name:         "topevents",
-	Description:  "Shows gateway event processing stats for all or one shard",
+	Description:  "Shows gateway event processing stats for all or one shard, bot owner only",
 	HideFromHelp: true,
 	Arguments: []*dcmd.ArgDef{
 		{Name: "shard", Type: dcmd.Int},
 	},
-	RunFunc: cmdFuncTopEvents,
+	RunFunc: util.RequireOwner(cmdFuncTopEvents),
 }
 
 func cmdFuncTopEvents(data *dcmd.Data) (interface{}, error) {
@@ -27,13 +28,13 @@ func cmdFuncTopEvents(data *dcmd.Data) (interface{}, error) {
 	shardsTotal, lastPeriod := bot.EventLogger.GetStats()
 
 	sortable := make([]*DiscordEvtEntry, len(eventsystem.AllDiscordEvents))
-	for i, _ := range sortable {
+	for i := range sortable {
 		sortable[i] = &DiscordEvtEntry{
 			Name: eventsystem.AllDiscordEvents[i].String(),
 		}
 	}
 
-	for i, _ := range shardsTotal {
+	for i := range shardsTotal {
 		if data.Args[0].Value != nil && data.Args[0].Int() != i {
 			continue
 		}
@@ -51,7 +52,7 @@ func cmdFuncTopEvents(data *dcmd.Data) (interface{}, error) {
 		out = fmt.Sprintf("Stats for shard %d:\n", data.Args[0].Int())
 	}
 
-	out += "```\n#     Total  -   /s  - Event\n"
+	out += "\n#     Total  -   /s  - Event\n"
 	sum := int64(0)
 	sumPerSecond := float64(0)
 	for k, entry := range sortable {
@@ -61,7 +62,7 @@ func cmdFuncTopEvents(data *dcmd.Data) (interface{}, error) {
 	}
 
 	out += fmt.Sprintf("\nTotal: %d, Events per second: %.1f", sum, sumPerSecond)
-	out += "\n```"
+	out += "\n"
 
 	return out, nil
 }

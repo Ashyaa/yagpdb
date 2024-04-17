@@ -2,6 +2,7 @@ package automod
 
 import (
 	"context"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -11,20 +12,25 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/botlabs-gg/yagpdb/v2/automod/models"
+	"github.com/botlabs-gg/yagpdb/v2/common"
+	"github.com/botlabs-gg/yagpdb/v2/common/cplogs"
+	"github.com/botlabs-gg/yagpdb/v2/common/featureflags"
+	"github.com/botlabs-gg/yagpdb/v2/common/pubsub"
+	"github.com/botlabs-gg/yagpdb/v2/lib/discordgo"
+	"github.com/botlabs-gg/yagpdb/v2/lib/dstate"
+	"github.com/botlabs-gg/yagpdb/v2/moderation"
+	"github.com/botlabs-gg/yagpdb/v2/web"
 	"github.com/fatih/structs"
 	"github.com/gorilla/schema"
-	"github.com/jonas747/discordgo"
-	"github.com/jonas747/yagpdb/automod/models"
-	"github.com/jonas747/yagpdb/bot"
-	"github.com/jonas747/yagpdb/common"
-	"github.com/jonas747/yagpdb/common/cplogs"
-	"github.com/jonas747/yagpdb/common/featureflags"
-	"github.com/jonas747/yagpdb/web"
-	"github.com/volatiletech/sqlboiler/boil"
-	"github.com/volatiletech/sqlboiler/queries/qm"
+	"github.com/volatiletech/sqlboiler/v4/boil"
+	"github.com/volatiletech/sqlboiler/v4/queries/qm"
 	"goji.io"
 	"goji.io/pat"
 )
+
+//go:embed assets/automod.html
+var PageHTML string
 
 type CtxKey int
 
@@ -49,9 +55,9 @@ var (
 )
 
 func (p *Plugin) InitWeb() {
-	web.LoadHTMLTemplate("../../automod/assets/automod.html", "templates/plugins/automod.html")
-	web.AddSidebarItem(web.SidebarCategoryTools, &web.SidebarItem{
-		Name: "Automoderator v2",
+	web.AddHTMLTemplate("automod/assets/automod.html", PageHTML)
+	web.AddSidebarItem(web.SidebarCategoryModeration, &web.SidebarItem{
+		Name: "Advanced Automoderator",
 		URL:  "automod",
 		Icon: "fas fa-robot",
 	})
@@ -60,6 +66,10 @@ func (p *Plugin) InitWeb() {
 
 	web.CPMux.Handle(pat.New("/automod"), muxer)
 	web.CPMux.Handle(pat.New("/automod/*"), muxer)
+
+	// All handlers here require guild channels present
+	muxer.Use(web.RequireBotMemberMW)
+	muxer.Use(web.RequirePermMW(discordgo.PermissionManageRoles, discordgo.PermissionKickMembers, discordgo.PermissionBanMembers, discordgo.PermissionManageMessages, discordgo.PermissionManageServer, discordgo.PermissionModerateMembers))
 
 	getIndexHandler := web.ControllerHandler(p.handleGetAutomodIndex, "automod_index")
 
@@ -205,13 +215,14 @@ func (p *Plugin) handlePostAutomodCreateList(w http.ResponseWriter, r *http.Requ
 
 	err = list.InsertG(r.Context(), boil.Infer())
 	if err == nil {
-		bot.EvictGSCache(g.ID, CacheKeyLists)
+		pubsub.EvictCacheSet(cachedLists, g.ID)
 		go cplogs.RetryAddEntry(web.NewLogEntryFromContext(r.Context(), panelLogKeyNewList))
 	}
 	return tmpl, err
 }
 
 type UpdateListData struct {
+	Name    string `valid:",1,50"`
 	Content string `valid:",0,5000"`
 }
 
@@ -225,10 +236,11 @@ func (p *Plugin) handlePostAutomodUpdateList(w http.ResponseWriter, r *http.Requ
 		return nil, err
 	}
 
+	list.Name = data.Name
 	list.Content = strings.Fields(data.Content)
-	_, err = list.UpdateG(r.Context(), boil.Whitelist("content"))
+	_, err = list.UpdateG(r.Context(), boil.Whitelist("name", "content"))
 	if err == nil {
-		bot.EvictGSCache(g.ID, CacheKeyLists)
+		pubsub.EvictCacheSet(cachedLists, g.ID)
 		go cplogs.RetryAddEntry(web.NewLogEntryFromContext(r.Context(), panelLogKeyUpdatedList))
 	}
 	return tmpl, err
@@ -245,7 +257,7 @@ func (p *Plugin) handlePostAutomodDeleteList(w http.ResponseWriter, r *http.Requ
 
 	_, err = list.DeleteG(r.Context())
 	if err == nil {
-		bot.EvictGSCache(g.ID, CacheKeyLists)
+		pubsub.EvictCacheSet(cachedLists, g.ID)
 		go cplogs.RetryAddEntry(web.NewLogEntryFromContext(r.Context(), panelLogKeyRemovedList))
 	}
 	return tmpl, err
@@ -390,7 +402,7 @@ func (p *Plugin) handlePostAutomodUpdateRuleset(w http.ResponseWriter, r *http.R
 		return tmpl, err
 	}
 
-	bot.EvictGSCache(g.ID, CacheKeyRulesets)
+	pubsub.EvictCacheSet(cachedRulesets, g.ID)
 	featureflags.MarkGuildDirty(g.ID)
 	go cplogs.RetryAddEntry(web.NewLogEntryFromContext(r.Context(), panelLogKeyUpdatedRuleset))
 
@@ -413,7 +425,7 @@ func (p *Plugin) handlePostAutomodDeleteRuleset(w http.ResponseWriter, r *http.R
 	delete(tmpl, "CurrentRuleset")
 
 	if rows > 0 {
-		bot.EvictGSCache(g.ID, CacheKeyRulesets)
+		pubsub.EvictCacheSet(cachedRulesets, g.ID)
 		featureflags.MarkGuildDirty(g.ID)
 		go cplogs.RetryAddEntry(web.NewLogEntryFromContext(r.Context(), panelLogKeyRemovedRuleset))
 	}
@@ -486,6 +498,22 @@ func (p *Plugin) handlePostAutomodUpdateRule(w http.ResponseWriter, r *http.Requ
 		return tmpl, err
 	}
 
+	anyMute := false
+	for _, effect := range effects {
+		if effect.TypeID == 304 {
+			anyMute = true
+			break
+		}
+	}
+	if anyMute {
+		conf, err := moderation.GetConfig(g.ID)
+		if err != nil || conf.MuteRole == "" {
+			tx.Rollback()
+			tmpl.AddAlerts(web.ErrorAlert("No mute role set, please configure one."))
+			return tmpl, nil
+		}
+	}
+
 	// First wipe all previous rule data
 	_, err = models.AutomodRuleData(qm.Where("guild_id = ? AND rule_id = ?", g.ID, currentRule.ID)).DeleteAll(r.Context(), tx)
 	if err != nil {
@@ -523,7 +551,7 @@ func (p *Plugin) handlePostAutomodUpdateRule(w http.ResponseWriter, r *http.Requ
 
 	WebLoadRuleSettings(r, tmpl, ruleSet)
 
-	bot.EvictGSCache(g.ID, CacheKeyRulesets)
+	pubsub.EvictCacheSet(cachedRulesets, g.ID)
 	featureflags.MarkGuildDirty(g.ID)
 	go cplogs.RetryAddEntry(web.NewLogEntryFromContext(r.Context(), panelLogKeyUpdatedRule))
 
@@ -599,7 +627,7 @@ func CheckLimits(exec boil.ContextExecutor, rule *models.AutomodRule, tmpl web.T
 	return
 }
 
-func ReadRuleRowData(guild *discordgo.Guild, tmpl web.TemplateData, rawData []RuleRowData, form url.Values, namePrefix string) (result []*models.AutomodRuleDatum, validationOK bool, err error) {
+func ReadRuleRowData(guild *dstate.GuildSet, tmpl web.TemplateData, rawData []RuleRowData, form url.Values, namePrefix string) (result []*models.AutomodRuleDatum, validationOK bool, err error) {
 	parsedSettings := make([]*ParsedPart, 0, len(rawData))
 
 	for i, entry := range rawData {
@@ -724,7 +752,7 @@ func (p *Plugin) handlePostAutomodDeleteRule(w http.ResponseWriter, r *http.Requ
 			_, err := v.DeleteG(r.Context())
 			if err == nil {
 				ruleset.R.RulesetAutomodRules = append(ruleset.R.RulesetAutomodRules[:k], ruleset.R.RulesetAutomodRules[k+1:]...)
-				bot.EvictGSCache(g.ID, CacheKeyRulesets)
+				pubsub.EvictCacheSet(cachedRulesets, g.ID)
 				featureflags.MarkGuildDirty(g.ID)
 				go cplogs.RetryAddEntry(web.NewLogEntryFromContext(r.Context(), panelLogKeyRemovedRule))
 			}
@@ -791,7 +819,7 @@ var _ web.PluginWithServerHomeWidget = (*Plugin)(nil)
 
 func (p *Plugin) LoadServerHomeWidget(w http.ResponseWriter, r *http.Request) (web.TemplateData, error) {
 	g, templateData := web.GetBaseCPContextData(r.Context())
-	templateData["WidgetTitle"] = "Automod v2"
+	templateData["WidgetTitle"] = "Advanced Automoderator"
 	templateData["SettingsPath"] = "/automod"
 
 	rulesets, err := models.AutomodRulesets(qm.Where("guild_id = ?", g.ID), qm.Where("enabled = true")).CountG(r.Context())

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jonas747/discordgo"
+	"github.com/botlabs-gg/yagpdb/v2/lib/discordgo"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/sirupsen/logrus"
@@ -76,6 +76,11 @@ func (p *STDLogProxy) Write(b []byte) (n int, err error) {
 	return
 }
 
+var metricsHighRatelimits = promauto.NewCounter(prometheus.CounterOpts{
+	Name: "yagpdb_discord_high_ratelimits_total",
+	Help: "Ratelimits above 1000 seconds",
+})
+
 func discordLogger(msgL, caller int, format string, a ...interface{}) {
 	pc := make([]uintptr, 3)
 	runtime.Callers(caller+1, pc)
@@ -94,6 +99,10 @@ func discordLogger(msgL, caller int, format string, a ...interface{}) {
 		f.Warnf("[DG] "+format, a...)
 	default:
 		f.Infof("[DG] "+format, a...)
+	}
+
+	if strings.HasPrefix(format, "very high ratelimit") {
+		metricsHighRatelimits.Inc()
 	}
 }
 
@@ -171,6 +180,11 @@ var (
 		Name:       "yagpdb_discord_http_latency_seconds",
 		Help:       "Latency do the discord API",
 		Objectives: map[float64]float64{0.5: 0.05, 0.9: 0.01, 0.99: 0.001},
+	})
+
+	metricsConcurrentRequests = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "yagpdb_http_concurrent_requests",
+		Help: "Number of concurrent requests returned from the ratelimiter",
 	})
 )
 
@@ -251,4 +265,12 @@ func GetPluginLogger(plugin Plugin) *logrus.Entry {
 
 func GetFixedPrefixLogger(prefix string) *logrus.Entry {
 	return logrus.WithField("p", prefix)
+}
+
+func updateConcurrentRequests() {
+	for {
+		time.Sleep(time.Second)
+		num := BotSession.Ratelimiter.CurrentConcurrentLocks()
+		metricsConcurrentRequests.Set(float64(num))
+	}
 }

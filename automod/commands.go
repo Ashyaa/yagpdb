@@ -6,16 +6,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jonas747/dcmd/v2"
-	"github.com/jonas747/discordgo"
-	"github.com/jonas747/dstate/v2"
-	"github.com/jonas747/yagpdb/automod/models"
-	"github.com/jonas747/yagpdb/bot/paginatedmessages"
-	"github.com/jonas747/yagpdb/commands"
-	"github.com/jonas747/yagpdb/common"
-	"github.com/jonas747/yagpdb/common/featureflags"
-	"github.com/volatiletech/sqlboiler/boil"
-	"github.com/volatiletech/sqlboiler/queries/qm"
+	"github.com/botlabs-gg/yagpdb/v2/automod/models"
+	"github.com/botlabs-gg/yagpdb/v2/bot/paginatedmessages"
+	"github.com/botlabs-gg/yagpdb/v2/commands"
+	"github.com/botlabs-gg/yagpdb/v2/common"
+	"github.com/botlabs-gg/yagpdb/v2/common/featureflags"
+	"github.com/botlabs-gg/yagpdb/v2/lib/dcmd"
+	"github.com/botlabs-gg/yagpdb/v2/lib/discordgo"
+	"github.com/botlabs-gg/yagpdb/v2/lib/dstate"
+	"github.com/volatiletech/sqlboiler/v4/boil"
+	"github.com/volatiletech/sqlboiler/v4/queries/qm"
 )
 
 func (p *Plugin) AddCommands() {
@@ -34,7 +34,7 @@ func (p *Plugin) AddCommands() {
 			rulesetName := data.Args[0].Str()
 			ruleset, err := models.AutomodRulesets(qm.Where("guild_id = ? AND name ILIKE ?", data.GuildData.GS.ID, rulesetName)).OneG(data.Context())
 			if err != nil {
-				return "Unable to fine the ruleset, did you type the name correctly?", err
+				return "Unable to find the ruleset, did you type the name correctly?", err
 			}
 
 			ruleset.Enabled = !ruleset.Enabled
@@ -43,8 +43,8 @@ func (p *Plugin) AddCommands() {
 				return nil, err
 			}
 
-			data.GuildData.GS.UserCacheDel(CacheKeyRulesets)
-			data.GuildData.GS.UserCacheDel(CacheKeyLists)
+			cachedRulesets.Delete(data.GuildData.GS.ID)
+			cachedLists.Delete(data.GuildData.GS.ID)
 			featureflags.MarkGuildDirty(data.GuildData.GS.ID)
 
 			enabledStr := "enabled"
@@ -198,14 +198,14 @@ func (p *Plugin) AddCommands() {
 			}
 
 			for name, count := range violations {
-				out += fmt.Sprintf("Violation: %-20s Count: %d\n", name, count)
+				out += fmt.Sprintf("%-31s Count: %d\n", common.CutStringShort(name, 30), count)
 			}
 
 			if out == "" {
 				return "No Violations found with specified conditions", nil
 			}
 
-			out = "```" + out + fmt.Sprintf("%-31s Count: %d\n", "Total", len(listViolations)) + "```"
+			out = "```" + out + fmt.Sprintf("\n%-31s Count: %d\n", "Total", len(listViolations)) + "```"
 			return &discordgo.MessageEmbed{
 				Title:       "Violations Summary",
 				Description: out,
@@ -365,7 +365,7 @@ func (p *Plugin) AddCommands() {
 		},
 	}
 
-	container := commands.CommandSystem.Root.Sub("automod", "amod")
+	container, _ := commands.CommandSystem.Root.Sub("automod", "amod")
 	container.NotFound = commands.CommonContainerNotFoundHandler(container, "")
 	container.Description = "Commands for managing automod"
 
@@ -376,7 +376,7 @@ func (p *Plugin) AddCommands() {
 	container.AddCommand(cmdListVLC, cmdListVLC.GetTrigger())
 	container.AddCommand(cmdDelV, cmdDelV.GetTrigger())
 	container.AddCommand(cmdClearV, cmdClearV.GetTrigger())
-	commands.RegisterSlashCommandsContainer(container, false, func(gs *dstate.GuildState) ([]int64, error) {
+	commands.RegisterSlashCommandsContainer(container, false, func(gs *dstate.GuildSet) ([]int64, error) {
 		return nil, nil
 	})
 }

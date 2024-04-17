@@ -2,25 +2,34 @@ package logs
 
 import (
 	"context"
+	_ "embed"
 	"errors"
 	"fmt"
 	"html/template"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
-	"github.com/jonas747/discordgo"
-	"github.com/jonas747/yagpdb/bot"
-	"github.com/jonas747/yagpdb/bot/botrest"
-	"github.com/jonas747/yagpdb/common"
-	"github.com/jonas747/yagpdb/common/cplogs"
-	"github.com/jonas747/yagpdb/logs/models"
-	"github.com/jonas747/yagpdb/web"
 	"github.com/volatiletech/null/v8"
 	"github.com/volatiletech/sqlboiler/v4/boil"
 	"goji.io"
 	"goji.io/pat"
+
+	"github.com/botlabs-gg/yagpdb/v2/bot/botrest"
+	"github.com/botlabs-gg/yagpdb/v2/common"
+	"github.com/botlabs-gg/yagpdb/v2/common/cplogs"
+	"github.com/botlabs-gg/yagpdb/v2/common/pubsub"
+	"github.com/botlabs-gg/yagpdb/v2/lib/discordgo"
+	"github.com/botlabs-gg/yagpdb/v2/logs/models"
+	"github.com/botlabs-gg/yagpdb/v2/web"
 )
+
+//go:embed assets/logs_control_panel.html
+var PageHTMLControlPanel string
+
+//go:embed assets/logs_view.html
+var PageHTMLView string
 
 var AuthorColors = []string{
 	"7c7cff", // blue-ish
@@ -54,10 +63,10 @@ var (
 )
 
 func (lp *Plugin) InitWeb() {
-	web.LoadHTMLTemplate("../../logs/assets/logs_control_panel.html", "templates/plugins/logs_control_panel.html")
-	web.LoadHTMLTemplate("../../logs/assets/logs_view.html", "templates/plugins/logs_view.html")
+	web.AddHTMLTemplate("logs/assets/logs_control_panel.html", PageHTMLControlPanel)
+	web.AddHTMLTemplate("logs/assets/logs_view.html", PageHTMLView)
 
-	web.AddSidebarItem(web.SidebarCategoryTools, &web.SidebarItem{
+	web.AddSidebarItem(web.SidebarCategoryModeration, &web.SidebarItem{
 		Name: "Logging",
 		URL:  "logging/",
 		Icon: "fas fa-database",
@@ -93,7 +102,8 @@ func (lp *Plugin) InitWeb() {
 func HandleLogsCP(w http.ResponseWriter, r *http.Request) (web.TemplateData, error) {
 	ctx := r.Context()
 	g, tmpl := web.GetBaseCPContextData(ctx)
-
+	tmpl["GlobalUsernameTrackingEnabled"] = confEnableUsernameTracking.GetBool()
+	tmpl["LogPurgeEnabled"] = ConfEnableMessageLogPurge.GetBool()
 	beforeID := 0
 	beforeStr := r.URL.Query().Get("before")
 	if beforeStr != "" {
@@ -102,6 +112,9 @@ func HandleLogsCP(w http.ResponseWriter, r *http.Request) (web.TemplateData, err
 			tmpl.AddAlerts(web.ErrorAlert("Failed parsing before id"))
 		}
 		beforeID = int(beforeId64)
+		if beforeID < 1 {
+			beforeID = 1
+		}
 	} else {
 		tmpl["FirstPage"] = true
 	}
@@ -114,6 +127,9 @@ func HandleLogsCP(w http.ResponseWriter, r *http.Request) (web.TemplateData, err
 			tmpl.AddAlerts(web.ErrorAlert("Failed parsing before id"))
 		}
 		afterID = int(id64)
+		if afterID < 1 {
+			afterID = 1
+		}
 		tmpl["FirstPage"] = false
 	}
 
@@ -168,9 +184,8 @@ func HandleLogsCPSaveGeneral(w http.ResponseWriter, r *http.Request) (web.Templa
 
 	err := config.UpsertG(ctx, true, []string{"guild_id"}, boil.Infer(), boil.Infer())
 	if err == nil {
-		bot.EvictGSCache(g.ID, CacheKeyConfig)
+		pubsub.EvictCacheSet(configCache, g.ID)
 		go cplogs.RetryAddEntry(web.NewLogEntryFromContext(r.Context(), panelLogKeyUpdatedSettings))
-
 	}
 	return tmpl, err
 }
@@ -181,7 +196,7 @@ func HandleLogsCPDelete(w http.ResponseWriter, r *http.Request) (web.TemplateDat
 
 	data := ctx.Value(common.ContextKeyParsedForm).(*DeleteData)
 	if data.ID == 0 {
-		return tmpl, errors.New("ID is blank!")
+		return tmpl, errors.New("id is blank")
 	}
 
 	_, err := models.MessageLogs2s(
@@ -218,29 +233,34 @@ func HandleLogsCPDeleteAll(w http.ResponseWriter, r *http.Request) (web.Template
 }
 
 func CheckCanAccessLogs(w http.ResponseWriter, r *http.Request, config *models.GuildLoggingConfig) bool {
-	_, tmpl := web.GetBaseCPContextData(r.Context())
+	ctx := r.Context()
+	_, tmpl := web.GetBaseCPContextData(ctx)
 
-	isAdmin, _ := web.IsAdminRequest(r.Context(), r)
-
-	// check if were allowed access to logs on this server
-	if isAdmin || config.AccessMode == AccessModeEveryone {
-		return true
-	}
-
-	member := web.ContextMember(r.Context())
+	member := web.ContextMember(ctx)
 	if member == nil {
-		tmpl.AddAlerts(web.ErrorAlert("This server has restricted log access to members only."))
+		goTo := url.QueryEscape(r.RequestURI)
+		alertLink := fmt.Sprintf(`<a href="%s/login?goto=%s>here</a>`, web.BaseURL(), goTo)
+		alertMsg := fmt.Sprintf("This server has restricted log access to members only.\nIf you are a member, click %s to login.", alertLink)
+
+		tmpl.AddAlerts(web.ErrorAlert(alertMsg))
 		return false
 	}
 
-	if len(config.MessageLogsAllowedRoles) > 0 {
-		if !common.ContainsInt64SliceOneOf(member.Roles, config.MessageLogsAllowedRoles) {
-			tmpl.AddAlerts(web.ErrorAlert("This server has restricted log access to certain roles, you don't have any of them."))
-			return false
-		}
+	memberPermissions := web.ContextMemberPerms(ctx)
+	guild := web.ContextGuild(ctx)
+
+	// if access mode is everyone or the user is the owner or they have administrator/manage server perms, then they can access the logs
+	if (config.AccessMode == 1) || (member.User.ID == guild.OwnerID) || (memberPermissions&discordgo.PermissionAdministrator == discordgo.PermissionAdministrator) || (memberPermissions&discordgo.PermissionManageServer == discordgo.PermissionManageServer) {
+		return true
 	}
 
-	return true
+	// If the user has one of the allowed roles
+	if len(config.MessageLogsAllowedRoles) > 0 && common.ContainsInt64SliceOneOf(member.Roles, config.MessageLogsAllowedRoles) {
+		return true
+	}
+
+	tmpl.AddAlerts(web.ErrorAlert("This server has restricted log access to certain roles, you don't have any of them."))
+	return false
 }
 
 type ctxKey int
@@ -324,7 +344,7 @@ func HandleLogsHTML(w http.ResponseWriter, r *http.Request) interface{} {
 	tmpl["CanViewDeleted"] = canViewDeleted
 
 	// Convert into views with formatted dates and colors
-	const TimeFormat = "2006 Jan 02 15:04"
+	const TimeFormat = "2006 Jan 02 15:04:05"
 	messageViews := make([]*MessageView, len(messages))
 	for i := range messageViews {
 		m := messages[i]
@@ -422,16 +442,22 @@ func (p *Plugin) LoadServerHomeWidget(w http.ResponseWriter, r *http.Request) (w
 		nBlacklistedChannels = len(split)
 	}
 
-	format := `<ul>
-	<li>Username logging: %s</li>
-	<li>Nickname logging: %s</li>
-	<li>Blacklisted channels from creating message logs: <code>%d</code></li>
-</ul>`
-
 	templateData["WidgetEnabled"] = true
-
-	templateData["WidgetBody"] = template.HTML(fmt.Sprintf(format, web.EnabledDisabledSpanStatus(config.UsernameLoggingEnabled.Bool),
-		web.EnabledDisabledSpanStatus(config.NicknameLoggingEnabled.Bool), nBlacklistedChannels))
+	widgetBody := ""
+	if confEnableUsernameTracking.GetBool() {
+		format := `<ul>
+		<li>Username logging: %s</li>
+		<li>Nickname logging: %s</li>
+		<li>Blacklisted channels from creating message logs: <code>%d</code></li>
+	</ul>`
+		widgetBody = fmt.Sprintf(format,
+			web.EnabledDisabledSpanStatus(config.UsernameLoggingEnabled.Bool),
+			web.EnabledDisabledSpanStatus(config.NicknameLoggingEnabled.Bool),
+			nBlacklistedChannels)
+	} else {
+		widgetBody = fmt.Sprintf(`Blacklisted channels from creating message logs: <code>%d</code>`, nBlacklistedChannels)
+	}
+	templateData["WidgetBody"] = template.HTML(widgetBody)
 
 	return templateData, nil
 }

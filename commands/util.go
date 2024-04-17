@@ -8,12 +8,11 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"emperror.dev/errors"
-	"github.com/jonas747/dcmd/v2"
-	"github.com/jonas747/discordgo"
-	"github.com/jonas747/dstate/v2"
-	"github.com/jonas747/yagpdb/bot"
-	"github.com/jonas747/yagpdb/common"
+	"github.com/botlabs-gg/yagpdb/v2/bot"
+	"github.com/botlabs-gg/yagpdb/v2/common"
+	"github.com/botlabs-gg/yagpdb/v2/lib/dcmd"
+	"github.com/botlabs-gg/yagpdb/v2/lib/discordgo"
+	"github.com/botlabs-gg/yagpdb/v2/lib/dstate"
 )
 
 type DurationArg struct {
@@ -22,23 +21,26 @@ type DurationArg struct {
 
 var _ dcmd.ArgType = (*DurationArg)(nil)
 
-func (d *DurationArg) Matches(def *dcmd.ArgDef, part string) bool {
+func (d *DurationArg) CheckCompatibility(def *dcmd.ArgDef, part string) dcmd.CompatibilityResult {
 	if len(part) < 1 {
-		return false
+		return dcmd.Incompatible
 	}
 
 	// We "need" the first character to be a number
 	r, _ := utf8.DecodeRuneInString(part)
 	if !unicode.IsNumber(r) {
-		return false
+		return dcmd.Incompatible
 	}
 
-	_, err := ParseDuration(part)
-	return err == nil
+	_, err := common.ParseDuration(part)
+	if err != nil {
+		return dcmd.Incompatible
+	}
+	return dcmd.CompatibilityGood
 }
 
 func (d *DurationArg) ParseFromMessage(def *dcmd.ArgDef, part string, data *dcmd.Data) (interface{}, error) {
-	dur, err := ParseDuration(part)
+	dur, err := common.ParseDuration(part)
 	if err != nil {
 		return nil, err
 	}
@@ -59,7 +61,7 @@ func (d *DurationArg) ParseFromInteraction(def *dcmd.ArgDef, data *dcmd.Data, op
 	if err != nil {
 		return nil, err
 	}
-	dur, err := ParseDuration(s)
+	dur, err := common.ParseDuration(s)
 	if err != nil {
 		return nil, err
 	}
@@ -80,87 +82,7 @@ func (d *DurationArg) HelpName() string {
 }
 
 func (d *DurationArg) SlashCommandOptions(def *dcmd.ArgDef) []*discordgo.ApplicationCommandOption {
-	return []*discordgo.ApplicationCommandOption{def.StandardSlashCommandOption(discordgo.CommandOptionTypeString)}
-}
-
-// Parses a time string like 1day3h
-func ParseDuration(str string) (time.Duration, error) {
-	var dur time.Duration
-
-	currentNumBuf := ""
-	currentModifierBuf := ""
-
-	// Parse the time
-	for _, v := range str {
-		// Ignore whitespace
-		if unicode.Is(unicode.White_Space, v) {
-			continue
-		}
-
-		if unicode.IsNumber(v) {
-			// If we reached a number and the modifier was also set, parse the last duration component before starting a new one
-			if currentModifierBuf != "" {
-				if currentNumBuf == "" {
-					currentNumBuf = "1"
-				}
-				d, err := parseDurationComponent(currentNumBuf, currentModifierBuf)
-				if err != nil {
-					return d, err
-				}
-
-				dur += d
-
-				currentNumBuf = ""
-				currentModifierBuf = ""
-			}
-
-			currentNumBuf += string(v)
-
-		} else {
-			currentModifierBuf += string(v)
-		}
-	}
-
-	if currentNumBuf != "" {
-		d, err := parseDurationComponent(currentNumBuf, currentModifierBuf)
-		if err != nil {
-			return dur, errors.WrapIf(err, "not a duration")
-		}
-
-		dur += d
-	}
-
-	return dur, nil
-}
-
-func parseDurationComponent(numStr, modifierStr string) (time.Duration, error) {
-	parsedNum, err := strconv.ParseInt(numStr, 10, 64)
-	if err != nil {
-		return 0, err
-	}
-
-	parsedDur := time.Duration(parsedNum)
-
-	if strings.HasPrefix(modifierStr, "s") {
-		parsedDur = parsedDur * time.Second
-	} else if modifierStr == "" || (strings.HasPrefix(modifierStr, "m") && (len(modifierStr) < 2 || modifierStr[1] != 'o')) {
-		parsedDur = parsedDur * time.Minute
-	} else if strings.HasPrefix(modifierStr, "h") {
-		parsedDur = parsedDur * time.Hour
-	} else if strings.HasPrefix(modifierStr, "d") {
-		parsedDur = parsedDur * time.Hour * 24
-	} else if strings.HasPrefix(modifierStr, "w") {
-		parsedDur = parsedDur * time.Hour * 24 * 7
-	} else if strings.HasPrefix(modifierStr, "mo") {
-		parsedDur = parsedDur * time.Hour * 24 * 30
-	} else if strings.HasPrefix(modifierStr, "y") {
-		parsedDur = parsedDur * time.Hour * 24 * 365
-	} else {
-		return parsedDur, errors.New("couldn't figure out what '" + numStr + modifierStr + "` was")
-	}
-
-	return parsedDur, nil
-
+	return []*discordgo.ApplicationCommandOption{def.StandardSlashCommandOption(discordgo.ApplicationCommandOptionString)}
 }
 
 type DurationOutOfRangeError struct {
@@ -232,10 +154,7 @@ func CommonContainerNotFoundHandler(container *dcmd.Container, fixedMessage stri
 	return func(data *dcmd.Data) (interface{}, error) {
 		// Only show stuff if atleast 1 of the commands in the container is enabled
 		if data.GuildData != nil {
-			data.GuildData.GS.RLock()
 			cParentID := data.GuildData.CS.ParentID
-			data.GuildData.GS.RUnlock()
-
 			ms := data.GuildData.MS
 
 			channelOverrides, err := GetOverridesForChannel(data.ChannelID, cParentID, data.GuildData.GS.ID)
@@ -257,12 +176,12 @@ func CommonContainerNotFoundHandler(container *dcmd.Container, fixedMessage stri
 					continue
 				}
 
-				if len(settings.RequiredRoles) > 0 && !common.ContainsInt64SliceOneOf(settings.RequiredRoles, ms.Roles) {
+				if len(settings.RequiredRoles) > 0 && !common.ContainsInt64SliceOneOf(settings.RequiredRoles, ms.Member.Roles) {
 					// missing required role
 					continue
 				}
 
-				if len(settings.IgnoreRoles) > 0 && common.ContainsInt64SliceOneOf(settings.IgnoreRoles, ms.Roles) {
+				if len(settings.IgnoreRoles) > 0 && common.ContainsInt64SliceOneOf(settings.IgnoreRoles, ms.Member.Roles) {
 					// has ignored role
 					continue
 				}
@@ -297,19 +216,14 @@ type MemberArg struct{}
 
 var _ dcmd.ArgType = (*MemberArg)(nil)
 
-func (ma *MemberArg) Matches(def *dcmd.ArgDef, part string) bool {
+func (ma *MemberArg) CheckCompatibility(def *dcmd.ArgDef, part string) dcmd.CompatibilityResult {
 	// Check for mention
 	if strings.HasPrefix(part, "<@") && strings.HasSuffix(part, ">") {
-		return true
+		return dcmd.DetermineSnowflakeCompatibility(strings.TrimPrefix(part[2:len(part)-1], "!"))
 	}
 
 	// Check for ID
-	_, err := strconv.ParseInt(part, 10, 64)
-	if err == nil {
-		return true
-	}
-
-	return false
+	return dcmd.DetermineSnowflakeCompatibility(part)
 }
 
 func (ma *MemberArg) ParseFromMessage(def *dcmd.ArgDef, part string, data *dcmd.Data) (interface{}, error) {
@@ -319,7 +233,7 @@ func (ma *MemberArg) ParseFromMessage(def *dcmd.ArgDef, part string, data *dcmd.
 		return nil, dcmd.NewSimpleUserError("Invalid mention or id")
 	}
 
-	member, err := bot.GetMemberJoinedAt(data.GuildData.GS.ID, id)
+	member, err := bot.GetMember(data.GuildData.GS.ID, id)
 	if err != nil {
 		if common.IsDiscordErr(err, discordgo.ErrCodeUnknownMember, discordgo.ErrCodeUnknownUser) {
 			return nil, dcmd.NewSimpleUserError("User not a member of the server")
@@ -337,7 +251,7 @@ func (ma *MemberArg) ParseFromInteraction(def *dcmd.ArgDef, data *dcmd.Data, opt
 		return nil, err
 	}
 
-	return dstate.MSFromDGoMember(data.GuildData.GS, member), nil
+	return dstate.MemberStateFromMember(member), nil
 }
 
 func (ma *MemberArg) ExtractID(part string, data *dcmd.Data) int64 {
@@ -370,7 +284,7 @@ func (ma *MemberArg) HelpName() string {
 }
 
 func (ma *MemberArg) SlashCommandOptions(def *dcmd.ArgDef) []*discordgo.ApplicationCommandOption {
-	return []*discordgo.ApplicationCommandOption{def.StandardSlashCommandOption(discordgo.CommandOptionTypeUser)}
+	return []*discordgo.ApplicationCommandOption{def.StandardSlashCommandOption(discordgo.ApplicationCommandOptionUser)}
 }
 
 type EphemeralOrGuild struct {
@@ -392,7 +306,7 @@ func (e *EphemeralOrGuild) Send(data *dcmd.Data) ([]*discordgo.Message, error) {
 	default:
 		send := &discordgo.MessageSend{
 			Content:         e.Content,
-			Embed:           e.Embed,
+			Embeds:          []*discordgo.MessageEmbed{e.Embed},
 			AllowedMentions: discordgo.AllowedMentions{},
 		}
 
@@ -425,11 +339,13 @@ func (e *EphemeralOrNone) Send(data *dcmd.Data) ([]*discordgo.Message, error) {
 		// 	Content: "Failed running the command.",
 		// })
 
-		// Yeah so because the original reaction response is not marked as ephemeral, and there's no way to change that, just delete it i guess...
-		// because otherwise the followup message turns into the original response
-		err := data.Session.DeleteInteractionResponse(common.BotApplication.ID, data.SlashCommandTriggerData.Interaction.Token)
-		if err != nil {
-			return nil, err
+		if yc, ok := data.Cmd.Command.(*YAGCommand); ok && !yc.IsResponseEphemeral {
+			// Yeah so because the original reaction response is not marked as ephemeral, and there's no way to change that, just delete it i guess...
+			// because otherwise the followup message turns into the original response
+			err := data.Session.DeleteInteractionResponse(common.BotApplication.ID, data.SlashCommandTriggerData.Interaction.Token)
+			if err != nil {
+				return nil, err
+			}
 		}
 
 		m, err := data.Session.CreateFollowupMessage(common.BotApplication.ID, data.SlashCommandTriggerData.Interaction.Token, params)
@@ -457,23 +373,17 @@ type RoleArg struct{}
 
 var _ dcmd.ArgType = (*RoleArg)(nil)
 
-func (ra *RoleArg) Matches(def *dcmd.ArgDef, part string) bool {
+func (ra *RoleArg) CheckCompatibility(def *dcmd.ArgDef, part string) dcmd.CompatibilityResult {
 	// Check for mention
 	if strings.HasPrefix(part, "<@&") && strings.HasSuffix(part, ">") {
-		return true
+		return dcmd.DetermineSnowflakeCompatibility(part[3 : len(part)-1])
 	}
 
-	// Check for ID
-	_, err := strconv.ParseInt(part, 10, 64)
-	if err == nil {
-		return true
+	if part != "" {
+		// role name can be essentially any string
+		return dcmd.CompatibilityGood
 	}
-
-	if len(part) > 0 {
-		return true
-	}
-
-	return false
+	return dcmd.Incompatible
 }
 
 func (ra *RoleArg) ParseFromMessage(def *dcmd.ArgDef, part string, data *dcmd.Data) (interface{}, error) {
@@ -489,15 +399,11 @@ func (ra *RoleArg) ParseFromMessage(def *dcmd.ArgDef, part string, data *dcmd.Da
 		idName = ""
 	}
 
-	roles := data.GuildData.GS.Guild.Roles
-	var role discordgo.Role
-	for _, v := range roles {
+	for _, v := range data.GuildData.GS.Roles {
 		if v.ID == id {
-			role = *v
-			return &role, nil
+			return &v, nil
 		} else if v.Name == idName {
-			role = *v
-			return &role, nil
+			return &v, nil
 		}
 	}
 
@@ -510,7 +416,7 @@ func (ra *RoleArg) ParseFromInteraction(def *dcmd.ArgDef, data *dcmd.Data, optio
 }
 
 func (ra *RoleArg) SlashCommandOptions(def *dcmd.ArgDef) []*discordgo.ApplicationCommandOption {
-	return []*discordgo.ApplicationCommandOption{def.StandardSlashCommandOption(discordgo.CommandOptionTypeRole)}
+	return []*discordgo.ApplicationCommandOption{def.StandardSlashCommandOption(discordgo.ApplicationCommandOptionRole)}
 }
 
 func (ra *RoleArg) ExtractID(part string, data *dcmd.Data) interface{} {

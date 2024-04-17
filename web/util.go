@@ -10,10 +10,11 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/jonas747/discordgo"
-	"github.com/jonas747/yagpdb/bot"
-	"github.com/jonas747/yagpdb/common"
-	"github.com/jonas747/yagpdb/common/cplogs"
+	"github.com/botlabs-gg/yagpdb/v2/bot"
+	"github.com/botlabs-gg/yagpdb/v2/common"
+	"github.com/botlabs-gg/yagpdb/v2/common/cplogs"
+	"github.com/botlabs-gg/yagpdb/v2/lib/discordgo"
+	"github.com/botlabs-gg/yagpdb/v2/lib/dstate"
 	"github.com/sirupsen/logrus"
 	"goji.io/pattern"
 )
@@ -137,8 +138,8 @@ func SucessAlert(args ...interface{}) *Alert {
 	}
 }
 
-func ContextGuild(ctx context.Context) *discordgo.Guild {
-	return ctx.Value(common.ContextKeyCurrentGuild).(*discordgo.Guild)
+func ContextGuild(ctx context.Context) *dstate.GuildSet {
+	return ctx.Value(common.ContextKeyCurrentGuild).(*dstate.GuildSet)
 }
 
 func ContextIsAdmin(ctx context.Context) bool {
@@ -151,10 +152,10 @@ func ContextIsAdmin(ctx context.Context) bool {
 }
 
 // Returns base context data for control panel plugins
-func GetBaseCPContextData(ctx context.Context) (*discordgo.Guild, TemplateData) {
-	var guild *discordgo.Guild
+func GetBaseCPContextData(ctx context.Context) (*dstate.GuildSet, TemplateData) {
+	var guild *dstate.GuildSet
 	if v := ctx.Value(common.ContextKeyCurrentGuild); v != nil {
-		guild = v.(*discordgo.Guild)
+		guild = v.(*dstate.GuildSet)
 	}
 
 	templateData := ctx.Value(common.ContextKeyTemplateData).(TemplateData)
@@ -173,7 +174,7 @@ func CheckErr(t TemplateData, err error, errMsg string, logger func(...interface
 		errMsg = err.Error()
 	}
 
-	t.AddAlerts(ErrorAlert("An Error occured: ", errMsg))
+	t.AddAlerts(ErrorAlert("An error occurred: ", errMsg))
 
 	if logger != nil {
 		logger("An error occured:", err)
@@ -186,11 +187,10 @@ func CheckErr(t TemplateData, err error, errMsg string, logger func(...interface
 func IsAdminRequest(ctx context.Context, r *http.Request) (read bool, write bool) {
 
 	isReadOnlyReq := strings.EqualFold(r.Method, "GET") || strings.EqualFold(r.Method, "OPTIONS")
-
-	if v := ctx.Value(common.ContextKeyCurrentGuild); v != nil {
+	v := ctx.Value(common.ContextKeyCurrentGuild)
+	g := v.(*dstate.GuildSet)
+	if v != nil {
 		// accessing a server page
-		g := v.(*discordgo.Guild)
-
 		gWithConnected := &common.GuildWithConnected{
 			UserGuild: &discordgo.UserGuild{
 				ID: g.ID,
@@ -231,8 +231,9 @@ func IsAdminRequest(ctx context.Context, r *http.Request) (read bool, write bool
 		}
 
 		if isReadOnlyReq {
-			// allow special read only acces for GET and OPTIONS requests, simple and works well
-			if hasAcces, err := bot.HasReadOnlyAccess(cast.ID); hasAcces && err == nil {
+			logrus.Infof("%s (%d) tried to access server %d with Global Read Only Permissions", cast.Username, cast.ID, g.ID)
+			// allow special read only access for GET and OPTIONS requests, simple and works well
+			if hasAccess, err := bot.HasReadOnlyAccess(cast.ID); hasAccess && err == nil {
 				return true, false
 			}
 		}
@@ -247,7 +248,7 @@ func NewLogEntryFromContext(ctx context.Context, action string, params ...*cplog
 		return nil
 	}
 
-	g := ctx.Value(common.ContextKeyCurrentGuild).(*discordgo.Guild)
+	g := ctx.Value(common.ContextKeyCurrentGuild).(*dstate.GuildSet)
 
 	return cplogs.NewEntry(g.ID, user.ID, user.Username, action, params...)
 }
@@ -258,7 +259,7 @@ func StaticRoleProvider(roles []int64) func(guildID, userID int64) []int64 {
 	}
 }
 
-func HasPermissionCTX(ctx context.Context, aperms int) bool {
+func HasPermissionCTX(ctx context.Context, aperms int64) bool {
 	perms := ContextMemberPerms(ctx)
 	// Require manageserver, ownership of guild or ownership of bot
 	if perms&discordgo.PermissionAdministrator == discordgo.PermissionAdministrator ||
@@ -290,8 +291,6 @@ func WriteErrorResponse(w http.ResponseWriter, r *http.Request, err string, stat
 	}
 
 	http.Redirect(w, r, "/?error="+url.QueryEscape(err), http.StatusTemporaryRedirect)
-	return
-
 }
 
 func IsRequestPartial(ctx context.Context) bool {
@@ -315,13 +314,13 @@ func ContextMember(ctx context.Context) *discordgo.Member {
 	return i.(*discordgo.Member)
 }
 
-func ContextMemberPerms(ctx context.Context) int {
+func ContextMemberPerms(ctx context.Context) int64 {
 	i := ctx.Value(common.ContextKeyMemberPermissions)
 	if i == nil {
 		return 0
 	}
 
-	return i.(int)
+	return i.(int64)
 }
 
 func ParamOrEmpty(r *http.Request, key string) string {

@@ -1,10 +1,10 @@
 package util
 
 import (
-	"github.com/jonas747/dcmd/v2"
-	"github.com/jonas747/yagpdb/bot"
-	"github.com/jonas747/yagpdb/commands"
-	"github.com/jonas747/yagpdb/common"
+	"github.com/botlabs-gg/yagpdb/v2/bot"
+	"github.com/botlabs-gg/yagpdb/v2/commands"
+	"github.com/botlabs-gg/yagpdb/v2/common"
+	"github.com/botlabs-gg/yagpdb/v2/lib/dcmd"
 )
 
 func isExecedByCC(data *dcmd.Data) bool {
@@ -34,7 +34,7 @@ func RequireBotAdmin(inner dcmd.RunFunc) dcmd.RunFunc {
 func RequireOwner(inner dcmd.RunFunc) dcmd.RunFunc {
 	return func(data *dcmd.Data) (interface{}, error) {
 		if isExecedByCC(data) {
-			return "", nil
+			return " ", nil
 		}
 
 		if common.IsOwner(data.Author.ID) {

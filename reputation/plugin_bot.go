@@ -1,24 +1,25 @@
 package reputation
 
 import (
+	"database/sql"
 	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
 
-	"github.com/jonas747/dstate/v2"
-	"github.com/jonas747/yagpdb/analytics"
-	"github.com/jonas747/yagpdb/bot/paginatedmessages"
+	"github.com/botlabs-gg/yagpdb/v2/analytics"
+	"github.com/botlabs-gg/yagpdb/v2/bot/paginatedmessages"
+	"github.com/botlabs-gg/yagpdb/v2/lib/dstate"
 
-	"github.com/jonas747/dcmd/v2"
-	"github.com/jonas747/discordgo"
-	"github.com/jonas747/yagpdb/bot"
-	"github.com/jonas747/yagpdb/bot/eventsystem"
-	"github.com/jonas747/yagpdb/commands"
-	"github.com/jonas747/yagpdb/common"
-	"github.com/jonas747/yagpdb/reputation/models"
-	"github.com/jonas747/yagpdb/web"
-	"github.com/volatiletech/sqlboiler/queries/qm"
+	"github.com/botlabs-gg/yagpdb/v2/bot"
+	"github.com/botlabs-gg/yagpdb/v2/bot/eventsystem"
+	"github.com/botlabs-gg/yagpdb/v2/commands"
+	"github.com/botlabs-gg/yagpdb/v2/common"
+	"github.com/botlabs-gg/yagpdb/v2/lib/dcmd"
+	"github.com/botlabs-gg/yagpdb/v2/lib/discordgo"
+	"github.com/botlabs-gg/yagpdb/v2/reputation/models"
+	"github.com/botlabs-gg/yagpdb/v2/web"
+	"github.com/volatiletech/sqlboiler/v4/queries/qm"
 )
 
 var _ bot.BotInitHandler = (*Plugin)(nil)
@@ -34,8 +35,17 @@ func (p *Plugin) BotInit() {
 
 var thanksRegex = regexp.MustCompile(`(?i)( |\n|^)(thanks?\pP*|danks|ty|thx|\+rep|\+ ?\<\@[0-9]*\>)( |\n|$)`)
 
+func createRepDisabledError(guild *dcmd.GuildContextData) string {
+	return fmt.Sprintf("**The reputation system is disabled for this server.** Enable it at: <%s/reputation>.", web.ManageServerURL(guild))
+}
+
 func handleMessageCreate(evt *eventsystem.EventData) {
 	msg := evt.MessageCreate()
+
+	conf, err := GetConfig(evt.Context(), msg.GuildID)
+	if err != nil || !conf.Enabled || conf.DisableThanksDetection {
+		return
+	}
 
 	if !bot.IsNormalUserMessage(msg.Message) {
 		return
@@ -45,7 +55,25 @@ func handleMessageCreate(evt *eventsystem.EventData) {
 		return
 	}
 
+	if !evt.HasFeatureFlag(featureFlagThanksEnabled) {
+		return
+	}
+
 	if !thanksRegex.MatchString(msg.Content) {
+		return
+	}
+
+	cState := evt.CSOrThread()
+	if cState == nil {
+		return // No channel state, ignore
+	}
+
+	channelID := msg.ChannelID
+	// Check if thanks detection is allowed in the parent channel
+	if cState.Type.IsThread() {
+		channelID = cState.ParentID
+	}
+	if !isThanksDetectionAllowedInChannel(conf, channelID) {
 		return
 	}
 
@@ -54,17 +82,8 @@ func handleMessageCreate(evt *eventsystem.EventData) {
 		return
 	}
 
-	if !evt.HasFeatureFlag(featureFlagThanksEnabled) {
-		return
-	}
-
-	conf, err := GetConfig(evt.Context(), msg.GuildID)
-	if err != nil || !conf.Enabled || conf.DisableThanksDetection {
-		return
-	}
-
 	target, err := bot.GetMember(msg.GuildID, who.ID)
-	sender := dstate.MSFromDGoMember(evt.GS, msg.Member)
+	sender := dstate.MemberStateFromMember(msg.Member)
 	if err != nil {
 		logger.WithError(err).Error("Failed retrieving target member")
 		return
@@ -86,7 +105,15 @@ func handleMessageCreate(evt *eventsystem.EventData) {
 
 	go analytics.RecordActiveUnit(msg.GuildID, &Plugin{}, "auto_add_rep")
 
-	content := fmt.Sprintf("Gave +1 %s to **%s**", conf.PointsName, who.Mention())
+	newScore, newRank, err := GetUserStats(msg.GuildID, who.ID)
+	if err != nil {
+		newScore = -1
+		newRank = -1
+		logger.WithError(err).Error("Failed retrieving target stats")
+		return
+	}
+
+	content := fmt.Sprintf("Gave +1 %s to **%s** (current: `#%d` - `%d`)", conf.PointsName, who.Mention(), newRank, newScore)
 	common.BotSession.ChannelMessageSend(msg.ChannelID, content)
 }
 
@@ -104,6 +131,9 @@ var cmds = []*commands.YAGCommand{
 		SlashCommandEnabled: true,
 		DefaultEnabled:      false,
 		RunFunc: func(parsed *dcmd.Data) (interface{}, error) {
+			if parsed.Args[1].Int() < 1 {
+				return "**rep amount should be greater than or equal to 1**", nil
+			}
 			parsed.Args[1].Value = -parsed.Args[1].Int()
 			return CmdGiveRep(parsed)
 		},
@@ -120,7 +150,12 @@ var cmds = []*commands.YAGCommand{
 			{Name: "User", Type: dcmd.User},
 			{Name: "Num", Type: dcmd.Int, Default: 1},
 		},
-		RunFunc: CmdGiveRep,
+		RunFunc: func(parsed *dcmd.Data) (interface{}, error) {
+			if parsed.Args[1].Int() < 1 {
+				return "**rep amount should be greater than or equal to 1**", nil
+			}
+			return CmdGiveRep(parsed)
+		},
 	},
 	{
 		CmdCategory:         commands.CategoryFun,
@@ -137,7 +172,11 @@ var cmds = []*commands.YAGCommand{
 		RunFunc: func(parsed *dcmd.Data) (interface{}, error) {
 			conf, err := GetConfig(parsed.Context(), parsed.GuildData.GS.ID)
 			if err != nil {
-				return "An error occured while finding the server config", err
+				return "An error occurred while finding the server config", err
+			}
+
+			if !conf.Enabled {
+				return createRepDisabledError(parsed.GuildData), nil
 			}
 
 			if !IsAdmin(parsed.GuildData.GS, parsed.GuildData.MS, conf) {
@@ -148,10 +187,18 @@ var cmds = []*commands.YAGCommand{
 			targetUsername := strconv.FormatInt(targetID, 10)
 			targetMember, _ := bot.GetMember(parsed.GuildData.GS.ID, targetID)
 			if targetMember != nil {
-				targetUsername = targetMember.Username
+				targetUsername = targetMember.User.Username
+			} else {
+				prevMember, err := userPresentInRepLog(targetID, parsed.GuildData.GS.ID, parsed)
+				if err != nil {
+					return nil, err
+				}
+				if !prevMember {
+					return "Invalid User. This user never received/gave rep in this server", nil
+				}
 			}
 
-			err = SetRep(parsed.Context(), parsed.GuildData.GS.ID, parsed.GuildData.MS.ID, targetID, int64(parsed.Args[1].Int()))
+			err = SetRep(parsed.Context(), parsed.GuildData.GS.ID, parsed.GuildData.MS.User.ID, targetID, int64(parsed.Args[1].Int()))
 			if err != nil {
 				return nil, err
 			}
@@ -172,7 +219,11 @@ var cmds = []*commands.YAGCommand{
 		RunFunc: func(parsed *dcmd.Data) (interface{}, error) {
 			conf, err := GetConfig(parsed.Context(), parsed.GuildData.GS.ID)
 			if err != nil {
-				return "An error occured while finding the server config", err
+				return "An error occurred while finding the server config", err
+			}
+
+			if !conf.Enabled {
+				return createRepDisabledError(parsed.GuildData), nil
 			}
 
 			if !IsAdmin(parsed.GuildData.GS, parsed.GuildData.MS, conf) {
@@ -194,17 +245,17 @@ var cmds = []*commands.YAGCommand{
 		Name:                "RepLog",
 		Aliases:             []string{"replogs"},
 		Description:         "Shows the rep log for the specified user.",
-		RequiredArgs:        1,
 		SlashCommandEnabled: true,
 		DefaultEnabled:      false,
 		Arguments: []*dcmd.ArgDef{
 			{Name: "User", Type: dcmd.UserID},
 			{Name: "Page", Type: dcmd.Int, Default: 1},
 		},
+		ArgumentCombos: [][]int{{}, {0}, {1}, {0, 1}},
 		RunFunc: func(parsed *dcmd.Data) (interface{}, error) {
 			conf, err := GetConfig(parsed.Context(), parsed.GuildData.GS.ID)
 			if err != nil {
-				return "An error occured while finding the server config", err
+				return "An error occurred while finding the server config", err
 			}
 
 			if !IsAdmin(parsed.GuildData.GS, parsed.GuildData.MS, conf) {
@@ -212,6 +263,9 @@ var cmds = []*commands.YAGCommand{
 			}
 
 			targetID := parsed.Args[0].Int64()
+			if targetID == 0 {
+				targetID = parsed.Author.ID
+			}
 
 			const entriesPerPage = 20
 			offset := (parsed.Args[1].Int() - 1) * entriesPerPage
@@ -260,11 +314,11 @@ var cmds = []*commands.YAGCommand{
 				sender := entry.SenderUsername
 
 				for _, v := range members {
-					if v.ID == entry.ReceiverID {
-						receiver = v.Username + "#" + v.StrDiscriminator()
+					if v.User.ID == entry.ReceiverID {
+						receiver = v.User.String()
 					}
-					if v.ID == entry.SenderID {
-						sender = v.Username + "#" + v.StrDiscriminator()
+					if v.User.ID == entry.SenderID {
+						sender = v.User.String()
 					}
 				}
 
@@ -307,7 +361,7 @@ var cmds = []*commands.YAGCommand{
 
 			conf, err := GetConfig(parsed.Context(), parsed.GuildData.GS.ID)
 			if err != nil {
-				return "An error occured finding the server config", err
+				return "An error occurred finding the server config", err
 			}
 
 			score, rank, err := GetUserStats(parsed.GuildData.GS.ID, target.ID)
@@ -335,45 +389,88 @@ var cmds = []*commands.YAGCommand{
 		Arguments: []*dcmd.ArgDef{
 			{Name: "Page", Type: dcmd.Int, Default: 0},
 		},
+		ArgSwitches: []*dcmd.ArgDef{
+			{Name: "user", Help: "User to search for in the leaderboard", Type: dcmd.UserID},
+		},
 		SlashCommandEnabled: true,
-		DefaultEnabled:      false,
-		RunFunc: paginatedmessages.PaginatedCommand(0, func(parsed *dcmd.Data, p *paginatedmessages.PaginatedMessage, page int) (*discordgo.MessageEmbed, error) {
-			offset := (page - 1) * 15
-			entries, err := TopUsers(parsed.GuildData.GS.ID, offset, 15)
-			if err != nil {
-				return nil, err
-			}
+		DefaultEnabled:      true,
+		RunFunc: func(parsed *dcmd.Data) (interface{}, error) {
+			page := parsed.Args[0].Int()
+			if id := parsed.Switch("user").Int64(); id != 0 {
+				const query = `
+					SELECT pos
+					FROM (
+						SELECT ROW_NUMBER() OVER (ORDER BY points DESC) AS pos, user_id
+						FROM reputation_users
+						WHERE guild_id = $1
+					) as ordered_users
+					WHERE user_id = $2
+				`
 
-			detailed, err := DetailedLeaderboardEntries(parsed.GuildData.GS.ID, entries)
-			if err != nil {
-				return nil, err
-			}
-
-			if len(entries) < 1 && p != nil && p.LastResponse != nil { //Dont send No Results error on first execution
-				return nil, paginatedmessages.ErrNoResults
-			}
-
-			embed := &discordgo.MessageEmbed{
-				Title: "Reputation leaderboard",
-			}
-
-			leaderboardURL := web.BaseURL() + "/public/" + discordgo.StrID(parsed.GuildData.GS.ID) + "/reputation/leaderboard"
-			out := "```\n# -- Points -- User\n"
-			for _, v := range detailed {
-				user := v.Username
-				if user == "" {
-					user = "unknown ID:" + strconv.FormatInt(v.UserID, 10)
+				var pos int
+				err := common.PQ.QueryRow(query, parsed.GuildData.GS.ID, id).Scan(&pos)
+				if err != nil {
+					if err == sql.ErrNoRows {
+						return "Could not find that user on the leaderboard", nil
+					}
+					return "Failed finding that user on the leaderboard, try again", err
 				}
-				out += fmt.Sprintf("#%02d: %6d - %s\n", v.Rank, v.Points, user)
+
+				page = (pos-1)/15 + 1 // pos and page are both one-based
 			}
-			out += "```\n" + "Full leaderboard: <" + leaderboardURL + ">"
 
-			embed.Description = out
+			if page < 1 {
+				page = 1
+			}
 
-			return embed, nil
+			if parsed.Context().Value(paginatedmessages.CtxKeyNoPagination) != nil {
+				return topRepPager(parsed.GuildData.GS.ID, nil, page)
+			}
 
-		}),
+			_, err := paginatedmessages.CreatePaginatedMessage(parsed.GuildData.GS.ID, parsed.ChannelID, page, 0, func(p *paginatedmessages.PaginatedMessage, page int) (*discordgo.MessageEmbed, error) {
+				return topRepPager(parsed.GuildData.GS.ID, p, page)
+			})
+
+			return nil, err
+		},
 	},
+}
+
+func topRepPager(guildID int64, p *paginatedmessages.PaginatedMessage, page int) (*discordgo.MessageEmbed, error) {
+	offset := (page - 1) * 15
+	entries, err := TopUsers(guildID, offset, 15)
+	if err != nil {
+		return nil, err
+	}
+
+	detailed, err := DetailedLeaderboardEntries(guildID, entries)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(entries) < 1 && p != nil && p.LastResponse != nil { //Dont send No Results error on first execution
+		return nil, paginatedmessages.ErrNoResults
+	}
+
+	embed := &discordgo.MessageEmbed{
+		Title: "Reputation leaderboard",
+	}
+
+	leaderboardURL := web.BaseURL() + "/public/" + discordgo.StrID(guildID) + "/reputation/leaderboard"
+	out := "```\n# -- Points -- User\n"
+	for _, v := range detailed {
+		user := v.Username
+		if user == "" {
+			user = "unknown ID:" + strconv.FormatInt(v.UserID, 10)
+		}
+		out += fmt.Sprintf("#%02d: %6d - %s\n", v.Rank, v.Points, user)
+	}
+	out += "```\n" + "Full leaderboard: <" + leaderboardURL + ">"
+
+	embed.Description = out
+
+	return embed, nil
+
 }
 
 func CmdGiveRep(parsed *dcmd.Data) (interface{}, error) {
@@ -382,6 +479,10 @@ func CmdGiveRep(parsed *dcmd.Data) (interface{}, error) {
 	conf, err := GetConfig(parsed.Context(), parsed.GuildData.GS.ID)
 	if err != nil {
 		return nil, err
+	}
+
+	if !conf.Enabled {
+		return createRepDisabledError(parsed.GuildData), nil
 	}
 
 	pointsName := conf.PointsName
@@ -426,4 +527,30 @@ func CmdGiveRep(parsed *dcmd.Data) (interface{}, error) {
 
 	msg := fmt.Sprintf("%s `%d` %s %s **%s** (current: `#%d` - `%d`)", actionStr, amount, pointsName, targetStr, target.Username, newRank, newScore)
 	return msg, nil
+}
+
+// Function that checks if the given user has ever received/gave rep in the given server
+func userPresentInRepLog(userID int64, guildID int64, parsed *dcmd.Data) (found bool, err error) {
+	logEntries, err := models.ReputationLogs(qm.Where("guild_id = ? AND (receiver_id = ? OR sender_id = ?)", guildID, userID, userID), qm.OrderBy("id desc"), qm.Limit(1)).AllG(parsed.Context())
+	if err != nil {
+		return false, err
+	}
+
+	if len(logEntries) < 1 {
+		return false, nil
+	}
+	return true, nil
+}
+
+// Checks if the thanks detection is allowed to be run in the given channel
+func isThanksDetectionAllowedInChannel(config *models.ReputationConfig, channelID int64) bool {
+	if len(config.BlacklistedThanksChannels) > 0 {
+		if common.ContainsInt64Slice(config.BlacklistedThanksChannels, channelID) {
+			return false
+		}
+	}
+	if len(config.WhitelistedThanksChannels) > 0 {
+		return common.ContainsInt64Slice(config.WhitelistedThanksChannels, channelID)
+	}
+	return true
 }

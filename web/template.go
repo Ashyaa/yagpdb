@@ -8,9 +8,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jonas747/discordgo"
-	"github.com/jonas747/dutil"
-	"github.com/jonas747/yagpdb/common/templates"
+	"github.com/botlabs-gg/yagpdb/v2/common"
+	"github.com/botlabs-gg/yagpdb/v2/common/templates"
+	"github.com/botlabs-gg/yagpdb/v2/lib/discordgo"
+	"github.com/botlabs-gg/yagpdb/v2/lib/dstate"
 )
 
 func prettyTime(t time.Time) string {
@@ -36,12 +37,12 @@ func mTemplate(name string, values ...interface{}) (template.HTML, error) {
 	return template.HTML(buf.String()), nil
 }
 
-var permsString = map[string]int{
+var permsString = map[string]int64{
 	"ManageRoles":    discordgo.PermissionManageRoles,
 	"ManageMessages": discordgo.PermissionManageMessages,
 }
 
-func hasPerm(botPerms int, checkPerm string) (bool, error) {
+func hasPerm(botPerms int64, checkPerm string) (bool, error) {
 	p, ok := permsString[checkPerm]
 	if !ok {
 		return false, errors.New("Unknown permission: " + checkPerm)
@@ -57,7 +58,7 @@ func hasPerm(botPerms int, checkPerm string) (bool, error) {
 // 1. current selected roleid
 // 2. default empty display name
 // 3. default unknown display name
-func tmplRoleDropdown(roles []*discordgo.Role, highestBotRole *discordgo.Role, args ...interface{}) template.HTML {
+func tmplRoleDropdown(roles []discordgo.Role, highestBotRole *discordgo.Role, args ...interface{}) template.HTML {
 	hasCurrentSelected := len(args) > 0
 	var currentSelected int64
 	if hasCurrentSelected {
@@ -83,6 +84,7 @@ func tmplRoleDropdown(roles []*discordgo.Role, highestBotRole *discordgo.Role, a
 			output += `selected`
 		}
 		output += ">" + template.HTMLEscapeString(emptyName) + "</option>\n"
+		output += `<optgroup label="────────────"></optgroup>`
 	}
 
 	found := false
@@ -108,7 +110,7 @@ func tmplRoleDropdown(roles []*discordgo.Role, highestBotRole *discordgo.Role, a
 
 		optName := template.HTMLEscapeString(role.Name)
 		if highestBotRole != nil {
-			if dutil.IsRoleAbove(role, highestBotRole) || role.ID == highestBotRole.ID {
+			if common.IsRoleAbove(&role, highestBotRole) || role.ID == highestBotRole.ID {
 				output += " disabled"
 				optName += " (role is above bot)"
 			}
@@ -124,7 +126,7 @@ func tmplRoleDropdown(roles []*discordgo.Role, highestBotRole *discordgo.Role, a
 }
 
 // Same as tmplRoleDropdown but supports multiple selections
-func tmplRoleDropdownMutli(roles []*discordgo.Role, highestBotRole *discordgo.Role, selections []int64) template.HTML {
+func tmplRoleDropdownMutli(roles []discordgo.Role, highestBotRole *discordgo.Role, selections []int64) template.HTML {
 
 	var builder strings.Builder
 
@@ -137,7 +139,7 @@ OUTER:
 			}
 		}
 
-		builder.WriteString(fmt.Sprintf(`<option value="0" selected>Deleted role: %d</option>\n`, sr))
+		builder.WriteString(fmt.Sprintf(`<option value="%[1]d" selected>Deleted role: %[1]d</option>\n`, sr))
 	}
 
 	for k, role := range roles {
@@ -167,7 +169,7 @@ OUTER:
 
 		optName := template.HTMLEscapeString(role.Name)
 		if highestBotRole != nil {
-			if dutil.IsRoleAbove(role, highestBotRole) || highestBotRole.ID == role.ID {
+			if common.IsRoleAbove(&role, highestBotRole) || highestBotRole.ID == role.ID {
 				if !optIsSelected {
 					builder.WriteString(" disabled")
 				}
@@ -181,11 +183,9 @@ OUTER:
 	return template.HTML(builder.String())
 }
 
-func tmplChannelOpts(channelTypes []discordgo.ChannelType, optionPrefix string) interface{} {
-	optsBuilder := tmplChannelOptsMulti(channelTypes, optionPrefix)
-	return func(channels []*discordgo.Channel, selection interface{}, allowEmpty bool, emptyName string) template.HTML {
-
-		const unknownName = "Deleted channel"
+func tmplChannelOpts(channelTypes []discordgo.ChannelType) interface{} {
+	optsBuilder := tmplChannelOptsMulti(channelTypes)
+	return func(channels []dstate.ChannelState, selection interface{}, allowEmpty bool, emptyName string) template.HTML {
 
 		var builder strings.Builder
 
@@ -215,62 +215,99 @@ func tmplChannelOpts(channelTypes []discordgo.ChannelType, optionPrefix string) 
 	}
 }
 
-func tmplChannelOptsMulti(channelTypes []discordgo.ChannelType, optionPrefix string) func(channels []*discordgo.Channel, selections []int64) template.HTML {
-	return func(channels []*discordgo.Channel, selections []int64) template.HTML {
-
-		var builder strings.Builder
-
-		channelOpt := func(id int64, name string) {
-			builder.WriteString(`<option value="` + discordgo.StrID(id) + "\"")
-			for _, selected := range selections {
-				if selected == id {
-					builder.WriteString(" selected")
-				}
-			}
-
-			builder.WriteString(">" + template.HTMLEscapeString(name) + "</option>")
-		}
-
-		// Channels without a category
-		for _, c := range channels {
-			if c.ParentID != 0 || !containsChannelType(channelTypes, c.Type) {
-				continue
-			}
-
-			channelOpt(c.ID, optionPrefix+c.Name)
-		}
-
-		// Group channels by category
-		if len(channelTypes) > 1 || channelTypes[0] != discordgo.ChannelTypeGuildCategory {
-			for _, cat := range channels {
-				if cat.Type != discordgo.ChannelTypeGuildCategory {
-					continue
-				}
-
-				builder.WriteString("<optgroup label=\"" + template.HTMLEscapeString(cat.Name) + "\">")
-				for _, c := range channels {
-					if !containsChannelType(channelTypes, c.Type) || c.ParentID != cat.ID {
-						continue
-					}
-
-					channelOpt(c.ID, optionPrefix+c.Name)
-				}
-				builder.WriteString("</optgroup>")
-			}
-		}
-
-		return template.HTML(builder.String())
+func tmplChannelOptsMulti(allowedChannelTypes []discordgo.ChannelType) func(channels []dstate.ChannelState, selections []int64) template.HTML {
+	return func(channels []dstate.ChannelState, selections []int64) template.HTML {
+		gen := &channelOptsHTMLGenState{allowedChannelTypes: allowedChannelTypes, channels: channels, selections: selections}
+		return gen.HTML()
 	}
 }
 
-func containsChannelType(s []discordgo.ChannelType, t discordgo.ChannelType) bool {
-	for _, v := range s {
-		if v == t {
+type channelOptsHTMLGenState struct {
+	allowedChannelTypes []discordgo.ChannelType
+	channels            []dstate.ChannelState
+	selections          []int64
+
+	buf strings.Builder
+}
+
+func (g *channelOptsHTMLGenState) HTML() template.HTML {
+	g.outputDeletedChannels()
+	g.outputUncategorizedChannels()
+	if len(g.allowedChannelTypes) > 1 || g.allowedChannelTypes[0] != discordgo.ChannelTypeGuildCategory {
+		g.outputCategorizedChannels()
+	}
+	return template.HTML(g.buf.String())
+}
+
+func (g *channelOptsHTMLGenState) outputDeletedChannels() {
+	exists := make(map[int64]bool)
+	for _, c := range g.channels {
+		exists[c.ID] = true
+	}
+	for _, sel := range g.selections {
+		if !exists[sel] {
+			g.output(fmt.Sprintf(`<option value="%[1]d" selected class="deleted-channel">Deleted channel: %[1]d</option>\n`, sel))
+		}
+	}
+}
+
+func (g *channelOptsHTMLGenState) outputUncategorizedChannels() {
+	for _, c := range g.channels {
+		if c.ParentID == 0 && g.include(c.Type) {
+			g.outputChannel(c.ID, c.Name, c.Type)
+		}
+	}
+}
+
+func (g *channelOptsHTMLGenState) outputCategorizedChannels() {
+	for _, cat := range g.channels {
+		if cat.Type != discordgo.ChannelTypeGuildCategory {
+			continue
+		}
+
+		g.output(`<optgroup label="` + template.HTMLEscapeString(cat.Name) + `">`)
+		for _, c := range g.channels {
+			if c.ParentID == cat.ID && g.include(c.Type) {
+				g.outputChannel(c.ID, c.Name, c.Type)
+			}
+		}
+		g.output("</optgroup>")
+	}
+}
+
+func (g *channelOptsHTMLGenState) include(channelType discordgo.ChannelType) bool {
+	for _, t := range g.allowedChannelTypes {
+		if t == channelType {
 			return true
 		}
 	}
-
 	return false
+}
+
+func (g *channelOptsHTMLGenState) outputChannel(id int64, name string, channelType discordgo.ChannelType) {
+	g.output(`<option value="` + discordgo.StrID(id) + `"`)
+	for _, selected := range g.selections {
+		if selected == id {
+			g.output(" selected")
+		}
+	}
+
+	var prefix string
+	switch channelType {
+	case discordgo.ChannelTypeGuildText:
+		prefix = "#"
+	case discordgo.ChannelTypeGuildVoice:
+		prefix = "🔊"
+	case discordgo.ChannelTypeGuildForum:
+		prefix = "📃"
+	default:
+		prefix = ""
+	}
+	g.output(">" + template.HTMLEscapeString(prefix+name) + "</option>")
+}
+
+func (g *channelOptsHTMLGenState) output(s string) {
+	g.buf.WriteString(s)
 }
 
 func tmplCheckbox(name, id, description string, checked bool, extraInputAttrs ...string) template.HTML {
@@ -295,7 +332,7 @@ func tmplCheckbox(name, id, description string, checked bool, extraInputAttrs ..
 	}
 	builder.WriteString(`><label for="` + id + `" class="tgl-btn mb-2"></label>`)
 	// builder.WriteString(`><div class="switch"></div>`)
-	builder.WriteString(`<span class="ml-2 mb-2">` + description + `</span></div>`)
+	builder.WriteString(`<span class="tgl-desc ml-2 mb-2">` + description + `</span></div>`)
 	// builder.WriteString(`</div>`)
 
 	return template.HTML(builder.String())

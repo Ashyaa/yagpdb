@@ -4,9 +4,10 @@ package tickets
 
 import (
 	"fmt"
-	"github.com/jonas747/discordgo"
-	"github.com/jonas747/yagpdb/common"
-	"github.com/jonas747/yagpdb/tickets/models"
+
+	"github.com/botlabs-gg/yagpdb/v2/common"
+	"github.com/botlabs-gg/yagpdb/v2/lib/discordgo"
+	"github.com/botlabs-gg/yagpdb/v2/tickets/models"
 )
 
 type Plugin struct{}
@@ -39,7 +40,7 @@ func TicketLog(conf *models.TicketConfig, guildID int64, author *discordgo.User,
 	}
 
 	embed.Author = &discordgo.MessageEmbedAuthor{
-		Name:    fmt.Sprintf("%s#%s (%d)", author.Username, author.Discriminator, author.ID),
+		Name:    fmt.Sprintf("%s (%d)", author.String(), author.ID),
 		IconURL: author.AvatarURL("128"),
 	}
 

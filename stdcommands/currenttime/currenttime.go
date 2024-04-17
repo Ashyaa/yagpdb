@@ -4,8 +4,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jonas747/dcmd/v2"
-	"github.com/jonas747/yagpdb/commands"
+	"github.com/botlabs-gg/yagpdb/v2/commands"
+	"github.com/botlabs-gg/yagpdb/v2/lib/dcmd"
+	"github.com/botlabs-gg/yagpdb/v2/timezonecompanion"
 	"github.com/tkuchiki/go-timezone"
 )
 
@@ -28,7 +29,7 @@ func cmdFuncCurrentTime(data *dcmd.Data) (interface{}, error) {
 	now := time.Now()
 	if data.Args[0].Value != nil {
 		tzName := data.Args[0].Str()
-		names, err := timezone.GetTimezones(strings.ToUpper(data.Args[0].Str()))
+		names, err := timezone.New().GetTimezones(strings.ToUpper(data.Args[0].Str()))
 		if err == nil && len(names) > 0 {
 			tzName = names[0]
 		}
@@ -47,6 +48,10 @@ func cmdFuncCurrentTime(data *dcmd.Data) (interface{}, error) {
 		return now.In(location).Format(format), nil
 	}
 
-	// No offset of zone specified, just return the bots location
+	loc := timezonecompanion.GetUserTimezone(data.Author.ID)
+	if loc != nil {
+		return now.In(loc).Format(format), nil
+	}
+
 	return now.Format(format), nil
 }

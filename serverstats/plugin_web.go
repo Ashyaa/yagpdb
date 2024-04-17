@@ -2,6 +2,7 @@ package serverstats
 
 import (
 	"context"
+	_ "embed"
 	"fmt"
 	"html/template"
 	"net/http"
@@ -10,19 +11,22 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jonas747/discordgo"
-	"github.com/jonas747/yagpdb/common"
-	"github.com/jonas747/yagpdb/common/cplogs"
-	"github.com/jonas747/yagpdb/common/pubsub"
-	"github.com/jonas747/yagpdb/premium"
-	"github.com/jonas747/yagpdb/serverstats/models"
-	"github.com/jonas747/yagpdb/web"
+	"github.com/botlabs-gg/yagpdb/v2/common"
+	"github.com/botlabs-gg/yagpdb/v2/common/cplogs"
+	"github.com/botlabs-gg/yagpdb/v2/common/pubsub"
+	"github.com/botlabs-gg/yagpdb/v2/lib/discordgo"
+	"github.com/botlabs-gg/yagpdb/v2/premium"
+	"github.com/botlabs-gg/yagpdb/v2/serverstats/models"
+	"github.com/botlabs-gg/yagpdb/v2/web"
 	"github.com/karlseguin/rcache"
-	"github.com/volatiletech/null"
-	"github.com/volatiletech/sqlboiler/boil"
+	"github.com/volatiletech/null/v8"
+	"github.com/volatiletech/sqlboiler/v4/boil"
 	"goji.io"
 	"goji.io/pat"
 )
+
+//go:embed assets/serverstats.html
+var PageHTML string
 
 var WebStatsCache = rcache.New(cacheChartFetcher, time.Minute)
 var WebConfigCache = rcache.NewInt(cacheConfigFetcher, time.Minute)
@@ -35,7 +39,7 @@ type FormData struct {
 }
 
 func (p *Plugin) InitWeb() {
-	web.LoadHTMLTemplate("../../serverstats/assets/serverstats.html", "templates/plugins/serverstats.html")
+	web.AddHTMLTemplate("serverstats/assets/serverstats.html", PageHTML)
 
 	web.AddSidebarItem(web.SidebarCategoryTopLevel, &web.SidebarItem{
 		Name: "Stats",
@@ -135,7 +139,7 @@ OUTER:
 
 	err := model.UpsertG(r.Context(), true, []string{"guild_id"}, boil.Whitelist("public", "ignore_channels"), boil.Infer())
 	if err == nil {
-		go pubsub.Publish("server_stats_invalidate_cache", ag.ID, nil)
+		pubsub.EvictCacheSet(cachedConfig, ag.ID)
 		go cplogs.RetryAddEntry(web.NewLogEntryFromContext(r.Context(), panelLogKey))
 	}
 

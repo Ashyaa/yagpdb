@@ -3,19 +3,23 @@ package web
 import (
 	"crypto/tls"
 	"flag"
+	"fmt"
 	"html/template"
+	"io/fs"
 	"net/http"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/NYTimes/gziphandler"
-	"github.com/jonas747/discordgo"
-	"github.com/jonas747/yagpdb/common"
-	"github.com/jonas747/yagpdb/common/config"
-	"github.com/jonas747/yagpdb/common/patreon"
-	yagtmpl "github.com/jonas747/yagpdb/common/templates"
-	"github.com/jonas747/yagpdb/web/discordblog"
+	"github.com/botlabs-gg/yagpdb/v2/common"
+	"github.com/botlabs-gg/yagpdb/v2/common/config"
+	"github.com/botlabs-gg/yagpdb/v2/common/patreon"
+	yagtmpl "github.com/botlabs-gg/yagpdb/v2/common/templates"
+	"github.com/botlabs-gg/yagpdb/v2/frontend"
+	"github.com/botlabs-gg/yagpdb/v2/lib/dcmd"
+	"github.com/botlabs-gg/yagpdb/v2/lib/discordgo"
+	"github.com/botlabs-gg/yagpdb/v2/web/discordblog"
 	"github.com/natefinch/lumberjack"
 	"goji.io"
 	"goji.io/pat"
@@ -31,10 +35,10 @@ var (
 	ListenAddressHTTPS = ":5001"
 
 	// Muxers
-	RootMux           *goji.Mux
-	CPMux             *goji.Mux
-	ServerPublicMux   *goji.Mux
-	ServerPubliAPIMux *goji.Mux
+	RootMux            *goji.Mux
+	CPMux              *goji.Mux
+	ServerPublicMux    *goji.Mux
+	ServerPublicAPIMux *goji.Mux
 
 	properAddresses bool
 
@@ -92,14 +96,14 @@ func init() {
 		"roleOptions":      tmplRoleDropdown,
 		"roleOptionsMulti": tmplRoleDropdownMutli,
 
-		"textChannelOptions":      tmplChannelOpts([]discordgo.ChannelType{discordgo.ChannelTypeGuildText, discordgo.ChannelTypeGuildNews}, "#"),
-		"textChannelOptionsMulti": tmplChannelOptsMulti([]discordgo.ChannelType{discordgo.ChannelTypeGuildText, discordgo.ChannelTypeGuildNews}, "#"),
+		"textChannelOptions":      tmplChannelOpts([]discordgo.ChannelType{discordgo.ChannelTypeGuildText, discordgo.ChannelTypeGuildNews, discordgo.ChannelTypeGuildVoice, discordgo.ChannelTypeGuildForum}),
+		"textChannelOptionsMulti": tmplChannelOptsMulti([]discordgo.ChannelType{discordgo.ChannelTypeGuildText, discordgo.ChannelTypeGuildNews, discordgo.ChannelTypeGuildVoice, discordgo.ChannelTypeGuildForum}),
 
-		"voiceChannelOptions":      tmplChannelOpts([]discordgo.ChannelType{discordgo.ChannelTypeGuildVoice}, ""),
-		"voiceChannelOptionsMulti": tmplChannelOptsMulti([]discordgo.ChannelType{discordgo.ChannelTypeGuildVoice}, ""),
+		"voiceChannelOptions":      tmplChannelOpts([]discordgo.ChannelType{discordgo.ChannelTypeGuildVoice}),
+		"voiceChannelOptionsMulti": tmplChannelOptsMulti([]discordgo.ChannelType{discordgo.ChannelTypeGuildVoice}),
 
-		"catChannelOptions":      tmplChannelOpts([]discordgo.ChannelType{discordgo.ChannelTypeGuildCategory}, ""),
-		"catChannelOptionsMulti": tmplChannelOptsMulti([]discordgo.ChannelType{discordgo.ChannelTypeGuildCategory}, ""),
+		"catChannelOptions":      tmplChannelOpts([]discordgo.ChannelType{discordgo.ChannelTypeGuildCategory}),
+		"catChannelOptionsMulti": tmplChannelOptsMulti([]discordgo.ChannelType{discordgo.ChannelTypeGuildCategory}),
 	})
 
 	Templates = Templates.Funcs(yagtmpl.StandardFuncMap)
@@ -118,7 +122,7 @@ func loadTemplates() {
 	}
 
 	for _, v := range coreTemplates {
-		LoadHTMLTemplate(v, v)
+		loadCoreHTMLTemplate(v)
 	}
 }
 
@@ -128,6 +132,10 @@ func BaseURL() string {
 	}
 
 	return "http://" + common.ConfHost.GetString()
+}
+
+func ManageServerURL(guild *dcmd.GuildContextData) string {
+	return fmt.Sprintf("%s/manage/%d", BaseURL(), guild.GS.ID)
 }
 
 func Run() {
@@ -275,16 +283,16 @@ func setupRoutes() *goji.Mux {
 	ServerPublicMux = serverPublicMux
 
 	// same as above but for API stuff
-	ServerPubliAPIMux = goji.SubMux()
-	ServerPubliAPIMux.Use(ActiveServerMW)
-	ServerPubliAPIMux.Use(RequireActiveServer)
-	ServerPubliAPIMux.Use(LoadCoreConfigMiddleware)
-	ServerPubliAPIMux.Use(SetGuildMemberMiddleware)
+	ServerPublicAPIMux = goji.SubMux()
+	ServerPublicAPIMux.Use(ActiveServerMW)
+	ServerPublicAPIMux.Use(RequireActiveServer)
+	ServerPublicAPIMux.Use(LoadCoreConfigMiddleware)
+	ServerPublicAPIMux.Use(SetGuildMemberMiddleware)
 
-	RootMux.Handle(pat.Get("/api/:server"), ServerPubliAPIMux)
-	RootMux.Handle(pat.Get("/api/:server/*"), ServerPubliAPIMux)
+	RootMux.Handle(pat.Get("/api/:server"), ServerPublicAPIMux)
+	RootMux.Handle(pat.Get("/api/:server/*"), ServerPublicAPIMux)
 
-	ServerPubliAPIMux.Handle(pat.Get("/channelperms/:channel"), RequireActiveServer(APIHandler(HandleChanenlPermissions)))
+	ServerPublicAPIMux.Handle(pat.Get("/channelperms/:channel"), RequireActiveServer(APIHandler(HandleChannelPermissions)))
 
 	// Server selection has its own handler
 	RootMux.Handle(pat.Get("/manage"), SelectServerHomePageHandler)
@@ -337,7 +345,7 @@ func setupRoutes() *goji.Mux {
 	}
 
 	AddSidebarItem(SidebarCategoryCore, &SidebarItem{
-		Name: "Core",
+		Name: "Control panel access",
 		URL:  "core",
 		Icon: "fas fa-cog",
 	})
@@ -358,7 +366,7 @@ func setupRoutes() *goji.Mux {
 	return RootMux
 }
 
-var StaticFileserverDir = "."
+var StaticFilesFS fs.FS = frontend.StaticFiles
 
 func setupRootMux() {
 	mux := goji.NewMux()
@@ -374,7 +382,7 @@ func setupRootMux() {
 	}
 
 	// Setup fileserver
-	mux.Handle(pat.Get("/static/*"), http.FileServer(http.Dir(StaticFileserverDir)))
+	mux.Handle(pat.Get("/static/*"), http.FileServer(http.FS(StaticFilesFS)))
 	mux.Handle(pat.Get("/robots.txt"), http.HandlerFunc(handleRobotsTXT))
 	mux.Handle(pat.Get("/ads.txt"), http.HandlerFunc(handleAdsTXT))
 
@@ -408,24 +416,28 @@ func legacyCPRedirHandler(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/manage"+trimmed, http.StatusMovedPermanently)
 }
 
-func LoadHTMLTemplate(pathTesting, pathProd string) {
-	path := pathProd
-	if common.Testing {
-		path = pathTesting
-		if TestingTemplatePathResolver != nil {
-			path = TestingTemplatePathResolver(path)
-		}
-	}
+func AddHTMLTemplate(name, contents string) {
+	Templates = Templates.New(name)
+	Templates = template.Must(Templates.Parse(contents))
+}
 
-	Templates = template.Must(Templates.ParseFiles(path))
+func loadCoreHTMLTemplate(path string) {
+	contents, err := frontend.CoreTemplates.ReadFile(path)
+	if err != nil {
+		panic(err)
+	}
+	Templates = Templates.New(path)
+	Templates = template.Must(Templates.Parse(string(contents)))
 }
 
 const (
-	SidebarCategoryTopLevel = "Top"
-	SidebarCategoryFeeds    = "Feeds"
-	SidebarCategoryTools    = "Tools"
-	SidebarCategoryFun      = "Fun"
-	SidebarCategoryCore     = "Core"
+	SidebarCategoryTopLevel       = "Top"
+	SidebarCategoryFeeds          = "Feeds"
+	SidebarCategoryTools          = "Tools"
+	SidebarCategoryFun            = "Fun"
+	SidebarCategoryCore           = "Core"
+	SidebarCategoryCustomCommands = "CustomCommands"
+	SidebarCategoryModeration     = "Moderation"
 )
 
 type SidebarItem struct {
@@ -442,6 +454,3 @@ var sideBarItems = make(map[string][]*SidebarItem)
 func AddSidebarItem(category string, sItem *SidebarItem) {
 	sideBarItems[category] = append(sideBarItems[category], sItem)
 }
-
-// Resolves the path to template files in testing mode
-var TestingTemplatePathResolver func(in string) string

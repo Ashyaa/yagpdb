@@ -6,15 +6,16 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/jonas747/discordgo"
-	"github.com/jonas747/yagpdb/common"
-	"github.com/jonas747/yagpdb/common/internalapi"
+	"github.com/botlabs-gg/yagpdb/v2/common"
+	"github.com/botlabs-gg/yagpdb/v2/common/internalapi"
+	"github.com/botlabs-gg/yagpdb/v2/lib/discordgo"
+	"github.com/botlabs-gg/yagpdb/v2/lib/dstate"
 	"github.com/mediocregopher/radix/v3"
 )
 
 var clientLogger = common.GetFixedPrefixLogger("botrest_client")
 
-func GetGuild(guildID int64) (g *discordgo.Guild, err error) {
+func GetGuild(guildID int64) (g *dstate.GuildSet, err error) {
 	err = internalapi.GetWithGuild(guildID, discordgo.StrID(guildID)+"/guild", &g)
 	return
 }

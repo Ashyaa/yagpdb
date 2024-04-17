@@ -2,23 +2,29 @@ package templates
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/url"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"emperror.dev/errors"
-	"github.com/jonas747/discordgo"
-	"github.com/jonas747/dstate/v2"
-	"github.com/jonas747/template"
-	"github.com/jonas747/yagpdb/bot"
-	"github.com/jonas747/yagpdb/common"
-	"github.com/jonas747/yagpdb/common/scheduledevents2"
+	"github.com/botlabs-gg/yagpdb/v2/bot"
+	"github.com/botlabs-gg/yagpdb/v2/common"
+	"github.com/botlabs-gg/yagpdb/v2/common/prefix"
+	"github.com/botlabs-gg/yagpdb/v2/common/scheduledevents2"
+	"github.com/botlabs-gg/yagpdb/v2/lib/confusables"
+	"github.com/botlabs-gg/yagpdb/v2/lib/discordgo"
+	"github.com/botlabs-gg/yagpdb/v2/lib/dstate"
+	"github.com/botlabs-gg/yagpdb/v2/lib/template"
+	"github.com/botlabs-gg/yagpdb/v2/web/discorddata"
 	"github.com/sirupsen/logrus"
+	"github.com/vmihailenco/msgpack"
 )
 
 var (
@@ -34,31 +40,55 @@ var (
 		"toByte":     ToByte,
 
 		// string manipulation
-		"joinStr":   joinStrings,
-		"lower":     strings.ToLower,
-		"upper":     strings.ToUpper,
-		"slice":     slice,
-		"urlescape": url.PathEscape,
-		"split":     strings.Split,
-		"title":     strings.Title,
+		"hasPrefix":    strings.HasPrefix,
+		"hasSuffix":    strings.HasSuffix,
+		"joinStr":      joinStrings,
+		"lower":        strings.ToLower,
+		"slice":        slice,
+		"split":        strings.Split,
+		"title":        strings.Title,
+		"trimSpace":    strings.TrimSpace,
+		"upper":        strings.ToUpper,
+		"urlescape":    url.PathEscape,
+		"urlunescape":  url.PathUnescape,
+		"print":        withOutputLimit(fmt.Sprint, MaxStringLength),
+		"println":      withOutputLimit(fmt.Sprintln, MaxStringLength),
+		"printf":       withOutputLimitF(fmt.Sprintf, MaxStringLength),
+		"sanitizeText": confusables.SanitizeText,
+
+		// regexp
+		"reQuoteMeta": regexp.QuoteMeta,
 
 		// math
-		"add":               add,
-		"sub":               tmplSub,
-		"mult":              tmplMult,
-		"div":               tmplDiv,
-		"mod":               tmplMod,
-		"fdiv":              tmplFDiv,
-		"sqrt":              tmplSqrt,
-		"pow":               tmplPow,
-		"log":               tmplLog,
-		"round":             tmplRound,
-		"roundCeil":         tmplRoundCeil,
-		"roundFloor":        tmplRoundFloor,
-		"roundEven":         tmplRoundEven,
-		"humanizeThousands": tmplHumanizeThousands,
+		"add":        add,
+		"cbrt":       tmplCbrt,
+		"div":        tmplDiv,
+		"fdiv":       tmplFDiv,
+		"log":        tmplLog,
+		"mathConst":  tmplMathConstant,
+		"max":        tmplMax,
+		"min":        tmplMin,
+		"mod":        tmplMod,
+		"mult":       tmplMult,
+		"pow":        tmplPow,
+		"round":      tmplRound,
+		"roundCeil":  tmplRoundCeil,
+		"roundEven":  tmplRoundEven,
+		"roundFloor": tmplRoundFloor,
+		"sqrt":       tmplSqrt,
+		"sub":        tmplSub,
+
+		// bitwise ops
+		"bitwiseAnd":        tmplBitwiseAnd,
+		"bitwiseOr":         tmplBitwiseOr,
+		"bitwiseXor":        tmplBitwiseXor,
+		"bitwiseNot":        tmplBitwiseNot,
+		"bitwiseAndNot":     tmplBitwiseAndNot,
+		"bitwiseLeftShift":  tmplBitwiseLeftShift,
+		"bitwiseRightShift": tmplBitwiseRightShift,
 
 		// misc
+		"humanizeThousands":  tmplHumanizeThousands,
 		"dict":               Dictionary,
 		"sdict":              StringKeyDictionary,
 		"structToSdict":      StructToSdict,
@@ -68,28 +98,28 @@ var (
 		"complexMessageEdit": CreateMessageEdit,
 		"kindOf":             KindOf,
 
-		"formatTime":  tmplFormatTime,
-		"json":        tmplJson,
+		"adjective":   common.RandomAdjective,
 		"in":          in,
 		"inFold":      inFold,
-		"roleAbove":   roleIsAbove,
-		"adjective":   common.RandomAdjective,
+		"json":        tmplJson,
+		"jsonToSdict": tmplJSONToSDict,
 		"noun":        common.RandomNoun,
 		"randInt":     randInt,
-		"shuffle":     shuffle,
+		"roleAbove":   roleIsAbove,
 		"seq":         sequence,
-		"currentTime": tmplCurrentTime,
-		"newDate":     tmplNewDate,
 
-		"escapeHere": func(s string) (string, error) {
-			return "", errors.New("function is removed in favor of better direct control over mentions, join support server and read the announcements for more info.")
-		},
-		"escapeEveryone": func(s string) (string, error) {
-			return "", errors.New("function is removed in favor of better direct control over mentions, join support server and read the announcements for more info.")
-		},
-		"escapeEveryoneHere": func(s string) (string, error) {
-			return "", errors.New("function is removed in favor of better direct control over mentions, join support server and read the announcements for more info.")
-		},
+		"shuffle": shuffle,
+		"verb":    common.RandomVerb,
+
+		// time functions
+		"currentTime":     tmplCurrentTime,
+		"parseTime":       tmplParseTime,
+		"formatTime":      tmplFormatTime,
+		"loadLocation":    time.LoadLocation,
+		"newDate":         tmplNewDate,
+		"snowflakeToTime": tmplSnowflakeToTime,
+		"timestampToTime": tmplTimestampToTime,
+		"weekNumber":      tmplWeekNumber,
 
 		"humanizeDurationHours":   tmplHumanizeDurationHours,
 		"humanizeDurationMinutes": tmplHumanizeDurationMinutes,
@@ -102,8 +132,6 @@ var (
 
 var logger = common.GetFixedPrefixLogger("templates")
 
-func TODO() {}
-
 type ContextSetupFunc func(ctx *Context)
 
 func RegisterSetupFunc(f ContextSetupFunc) {
@@ -112,15 +140,29 @@ func RegisterSetupFunc(f ContextSetupFunc) {
 
 func init() {
 	RegisterSetupFunc(baseContextFuncs)
+
+	msgpack.RegisterExt(1, (*SDict)(nil))
+	msgpack.RegisterExt(2, (*Dict)(nil))
+	msgpack.RegisterExt(3, (*Slice)(nil))
 }
 
 // set by the premium package to return wether this guild is premium or not
 var GuildPremiumFunc func(guildID int64) (bool, error)
 
+// Defines where a template was executed from to enable certain restrictions
+type ExecutedFromType int
+
+const (
+	ExecutedFromStandard ExecutedFromType = 0
+	ExecutedFromJoin     ExecutedFromType = 1
+	ExecutedFromLeave    ExecutedFromType = 2
+	ExecutedFromEvalCC   ExecutedFromType = 3
+)
+
 type Context struct {
 	Name string
 
-	GS      *dstate.GuildState
+	GS      *dstate.GuildSet
 	MS      *dstate.MemberState
 	Msg     *discordgo.Message
 	BotUser *discordgo.User
@@ -137,22 +179,25 @@ type Context struct {
 
 	RegexCache map[string]*regexp.Regexp
 
-	CurrentFrame *contextFrame
+	CurrentFrame *ContextFrame
+
+	ExecutedFrom ExecutedFromType
 
 	contextFuncsAdded bool
 }
 
-type contextFrame struct {
+type ContextFrame struct {
 	CS *dstate.ChannelState
 
 	MentionEveryone bool
 	MentionHere     bool
 	MentionRoles    []int64
 
-	DelResponse bool
+	DelResponse     bool
+	PublishResponse bool
 
 	DelResponseDelay         int
-	EmebdsToSend             []*discordgo.MessageEmbed
+	EmbedsToSend             []*discordgo.MessageEmbed
 	AddResponseReactionNames []string
 
 	isNestedTemplate bool
@@ -160,7 +205,7 @@ type contextFrame struct {
 	SendResponseInDM bool
 }
 
-func NewContext(gs *dstate.GuildState, cs *dstate.ChannelState, ms *dstate.MemberState) *Context {
+func NewContext(gs *dstate.GuildSet, cs *dstate.ChannelState, ms *dstate.MemberState) *Context {
 	ctx := &Context{
 		GS: gs,
 		MS: ms,
@@ -171,7 +216,7 @@ func NewContext(gs *dstate.GuildState, cs *dstate.ChannelState, ms *dstate.Membe
 		Data:         make(map[string]interface{}),
 		Counters:     make(map[string]int),
 
-		CurrentFrame: &contextFrame{
+		CurrentFrame: &ContextFrame{
 			CS: cs,
 		},
 	}
@@ -194,30 +239,74 @@ func (c *Context) setupContextFuncs() {
 func (c *Context) setupBaseData() {
 
 	if c.GS != nil {
-		guild := c.GS.DeepCopy(false, true, true, false)
-		c.Data["Guild"] = guild
-		c.Data["Server"] = guild
-		c.Data["server"] = guild
+		c.Data["Guild"] = c.GS
+		c.Data["Server"] = c.GS
+		c.Data["server"] = c.GS
+		c.Data["ServerPrefix"] = prefix.GetPrefixIgnoreError(c.GS.ID)
 	}
 
 	if c.CurrentFrame.CS != nil {
 		channel := CtxChannelFromCS(c.CurrentFrame.CS)
 		c.Data["Channel"] = channel
 		c.Data["channel"] = channel
+
+		if parentID := common.ChannelOrThreadParentID(c.CurrentFrame.CS); parentID != c.CurrentFrame.CS.ID {
+			c.Data["ChannelOrThreadParent"] = CtxChannelFromCS(c.GS.GetChannelOrThread(parentID))
+		} else {
+			c.Data["ChannelOrThreadParent"] = channel
+		}
 	}
 
 	if c.MS != nil {
-		c.Data["Member"] = c.MS.DGoCopy()
-		c.Data["User"] = c.MS.DGoUser()
+		c.Data["BotUser"] = common.BotUser
+		c.Data["Member"] = c.MS.DgoMember()
+		c.Data["User"] = &c.MS.User
 		c.Data["user"] = c.Data["User"]
 	}
 
-	c.Data["TimeSecond"] = time.Second
-	c.Data["TimeMinute"] = time.Minute
-	c.Data["TimeHour"] = time.Hour
-	c.Data["UnixEpoch"] = time.Date(1970, 1, 1, 0, 0, 0, 0, time.UTC)
 	c.Data["DiscordEpoch"] = time.Date(2015, 1, 1, 0, 0, 0, 0, time.UTC)
+	c.Data["DomainRegex"] = common.DomainFinderRegex.String()
 	c.Data["IsPremium"] = c.IsPremium
+	c.Data["LinkRegex"] = common.LinkRegex.String()
+	c.Data["TimeHour"] = time.Hour
+	c.Data["TimeMinute"] = time.Minute
+	c.Data["TimeSecond"] = time.Second
+	c.Data["UnixEpoch"] = time.Date(1970, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	// permissions
+	c.Data["Permissions"] = map[string]int64{
+		"ReadMessages":       discordgo.PermissionReadMessages,
+		"SendMessages":       discordgo.PermissionSendMessages,
+		"SendTTSMessages":    discordgo.PermissionSendTTSMessages,
+		"ManageMessages":     discordgo.PermissionManageMessages,
+		"EmbedLinks":         discordgo.PermissionEmbedLinks,
+		"AttachFiles":        discordgo.PermissionAttachFiles,
+		"ReadMessageHistory": discordgo.PermissionReadMessageHistory,
+		"MentionEveryone":    discordgo.PermissionMentionEveryone,
+		"UseExternalEmojis":  discordgo.PermissionUseExternalEmojis,
+
+		"VoiceConnect":       discordgo.PermissionVoiceConnect,
+		"VoiceSpeak":         discordgo.PermissionVoiceSpeak,
+		"VoiceMuteMembers":   discordgo.PermissionVoiceMuteMembers,
+		"VoiceDeafenMembers": discordgo.PermissionVoiceDeafenMembers,
+		"VoiceMoveMembers":   discordgo.PermissionVoiceMoveMembers,
+		"VoiceUseVAD":        discordgo.PermissionVoiceUseVAD,
+
+		"ChangeNickname":  discordgo.PermissionChangeNickname,
+		"ManageNicknames": discordgo.PermissionManageNicknames,
+		"ManageRoles":     discordgo.PermissionManageRoles,
+		"ManageWebhooks":  discordgo.PermissionManageWebhooks,
+		"ManageEmojis":    discordgo.PermissionManageEmojis,
+
+		"CreateInstantInvite": discordgo.PermissionCreateInstantInvite,
+		"KickMembers":         discordgo.PermissionKickMembers,
+		"BanMembers":          discordgo.PermissionBanMembers,
+		"Administrator":       discordgo.PermissionAdministrator,
+		"ManageChannels":      discordgo.PermissionManageChannels,
+		"ManageServer":        discordgo.PermissionManageServer,
+		"AddReactions":        discordgo.PermissionAddReactions,
+		"ViewAuditLogs":       discordgo.PermissionViewAuditLogs,
+	}
 }
 
 func (c *Context) Parse(source string) (*template.Template, error) {
@@ -238,8 +327,10 @@ func (c *Context) Parse(source string) (*template.Template, error) {
 }
 
 const (
-	MaxOpsNormal  = 1000000
-	MaxOpsPremium = 2500000
+	MaxOpsNormal      = 1000000
+	MaxOpsPremium     = 2500000
+	MaxOpsEvalNormal  = 5000
+	MaxOpsEvalPremium = 10000
 )
 
 func (c *Context) Execute(source string) (string, error) {
@@ -255,24 +346,23 @@ func (c *Context) Execute(source string) (string, error) {
 		}
 		if c.GS != nil {
 			c.Msg.GuildID = c.GS.ID
-
-			member, err := bot.GetMember(c.GS.ID, c.BotUser.ID)
-			if err != nil {
-				return "", errors.WithMessage(err, "ctx.Execute")
+			if bot.State != nil {
+				member, err := bot.GetMember(c.GS.ID, c.BotUser.ID)
+				if err != nil {
+					return "", errors.WithMessage(err, "ctx.Execute")
+				}
+				c.Msg.Member = member.DgoMember()
+			} else {
+				member, err := discorddata.GetMember(c.GS.ID, c.BotUser.ID)
+				if err != nil {
+					return "", errors.WithMessage(err, "ctx.Execute")
+				}
+				c.Msg.Member = member
 			}
-
-			c.Msg.Member = member.DGoCopy()
 		}
-
 	}
 
-	if c.GS != nil {
-		c.GS.RLock()
-	}
 	c.setupBaseData()
-	if c.GS != nil {
-		c.GS.RUnlock()
-	}
 
 	parsed, err := c.Parse(source)
 	if err != nil {
@@ -283,25 +373,26 @@ func (c *Context) Execute(source string) (string, error) {
 	return c.executeParsed()
 }
 
-func (c *Context) executeParsed() (r string, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = errors.New("paniced!")
-		}
-	}()
-
+func (c *Context) executeParsed() (string, error) {
 	parsed := c.CurrentFrame.parsedTemplate
+
 	if c.IsPremium {
 		parsed = parsed.MaxOps(MaxOpsPremium)
+		if c.ExecutedFrom == ExecutedFromEvalCC {
+			parsed = parsed.MaxOps(MaxOpsEvalPremium)
+		}
 	} else {
 		parsed = parsed.MaxOps(MaxOpsNormal)
+		if c.ExecutedFrom == ExecutedFromEvalCC {
+			parsed = parsed.MaxOps(MaxOpsEvalNormal)
+		}
 	}
 
 	var buf bytes.Buffer
 	w := LimitWriter(&buf, 25000)
 
 	// started := time.Now()
-	err = parsed.Execute(w, c.Data)
+	err := parsed.Execute(w, c.Data)
 
 	// dur := time.Since(started)
 	if c.FixedOutput != "" {
@@ -321,9 +412,9 @@ func (c *Context) executeParsed() (r string, err error) {
 }
 
 // creates a new context frame and returns the old one
-func (c *Context) newContextFrame(cs *dstate.ChannelState) *contextFrame {
+func (c *Context) newContextFrame(cs *dstate.ChannelState) *ContextFrame {
 	old := c.CurrentFrame
-	c.CurrentFrame = &contextFrame{
+	c.CurrentFrame = &ContextFrame{
 		CS:               cs,
 		isNestedTemplate: true,
 	}
@@ -333,6 +424,9 @@ func (c *Context) newContextFrame(cs *dstate.ChannelState) *contextFrame {
 
 func (c *Context) ExecuteAndSendWithErrors(source string, channelID int64) error {
 	out, err := c.Execute(source)
+
+	// trim whitespace for accurate character count
+	out = strings.TrimSpace(out)
 
 	if utf8.RuneCountInString(out) > 2000 {
 		out = "Template output for " + c.Name + " was longer than 2k (contact an admin on the server...)"
@@ -374,7 +468,7 @@ func (c *Context) SendResponse(content string) (*discordgo.Message, error) {
 			return nil, nil
 		}
 
-		if !bot.BotProbablyHasPermissionGS(c.GS, c.CurrentFrame.CS.ID, discordgo.PermissionSendMessages) {
+		if hasPerms, _ := bot.BotHasPermissionGS(c.GS, c.CurrentFrame.CS.ID, discordgo.PermissionSendMessages); !hasPerms {
 			// don't bother sending the response if we dont have perms
 			return nil, nil
 		}
@@ -384,7 +478,7 @@ func (c *Context) SendResponse(content string) (*discordgo.Message, error) {
 		if c.CurrentFrame.CS != nil && c.CurrentFrame.CS.Type == discordgo.ChannelTypeDM {
 			channelID = c.CurrentFrame.CS.ID
 		} else {
-			privChannel, err := common.BotSession.UserChannelCreate(c.MS.ID)
+			privChannel, err := common.BotSession.UserChannelCreate(c.MS.User.ID)
 			if err != nil {
 				return nil, err
 			}
@@ -392,16 +486,31 @@ func (c *Context) SendResponse(content string) (*discordgo.Message, error) {
 		}
 	}
 
-	for _, v := range c.CurrentFrame.EmebdsToSend {
-		common.BotSession.ChannelMessageSendEmbed(channelID, v)
-	}
-
-	if strings.TrimSpace(content) == "" || (c.CurrentFrame.DelResponse && c.CurrentFrame.DelResponseDelay < 1) {
+	isDM := c.CurrentFrame.SendResponseInDM || (c.CurrentFrame.CS != nil && c.CurrentFrame.CS.IsPrivate())
+	msgSend := c.MessageSend("")
+	var embeds []*discordgo.MessageEmbed
+	embeds = append(embeds, c.CurrentFrame.EmbedsToSend...)
+	msgSend.Embeds = embeds
+	msgSend.Content = content
+	if (len(msgSend.Embeds) == 0 && strings.TrimSpace(content) == "") || (c.CurrentFrame.DelResponse && c.CurrentFrame.DelResponseDelay < 1) {
 		// no point in sending the response if it gets deleted immedietely
 		return nil, nil
 	}
-
-	m, err := common.BotSession.ChannelMessageSendComplex(channelID, c.MessageSend(content))
+	if isDM {
+		msgSend.Components = []discordgo.MessageComponent{
+			discordgo.ActionsRow{
+				Components: []discordgo.MessageComponent{
+					discordgo.Button{
+						Label:    "Show Server Info",
+						Style:    discordgo.PrimaryButton,
+						Emoji:    &discordgo.ComponentEmoji{Name: "📬"},
+						CustomID: fmt.Sprintf("DM_%d", c.GS.ID),
+					},
+				},
+			},
+		}
+	}
+	m, err := common.BotSession.ChannelMessageSendComplex(channelID, msgSend)
 	if err != nil {
 		logger.WithError(err).Error("Failed sending message")
 	} else {
@@ -410,11 +519,15 @@ func (c *Context) SendResponse(content string) (*discordgo.Message, error) {
 		}
 
 		if len(c.CurrentFrame.AddResponseReactionNames) > 0 {
-			go func(frame *contextFrame) {
+			go func(frame *ContextFrame) {
 				for _, v := range frame.AddResponseReactionNames {
 					common.BotSession.MessageReactionAdd(m.ChannelID, m.ID, v)
 				}
 			}(c.CurrentFrame)
+		}
+
+		if c.CurrentFrame.PublishResponse && c.CurrentFrame.CS.Type == discordgo.ChannelTypeGuildNews {
+			common.BotSession.ChannelMessageCrosspost(m.ChannelID, m.ID)
 		}
 	}
 
@@ -452,11 +565,10 @@ func (c *Context) IncreaseCheckCallCounterPremium(key string, normalLimit, premi
 }
 
 func (c *Context) IncreaseCheckGenericAPICall() bool {
+	if c.ExecutedFrom == ExecutedFromEvalCC {
+		return c.IncreaseCheckCallCounter("api_call", 20)
+	}
 	return c.IncreaseCheckCallCounter("api_call", 100)
-}
-
-func (c *Context) IncreaseCheckStateLock() bool {
-	return c.IncreaseCheckCallCounter("state_lock", 500)
 }
 
 func (c *Context) LogEntry() *logrus.Entry {
@@ -466,7 +578,7 @@ func (c *Context) LogEntry() *logrus.Entry {
 	})
 
 	if c.MS != nil {
-		f = f.WithField("user", c.MS.ID)
+		f = f.WithField("user", c.MS.User.ID)
 	}
 
 	if c.CurrentFrame.CS != nil {
@@ -484,29 +596,34 @@ func (c *Context) addContextFunc(name string, f interface{}) {
 
 func baseContextFuncs(c *Context) {
 	// message functions
-	c.addContextFunc("sendDM", c.tmplSendDM)
-	c.addContextFunc("sendMessage", c.tmplSendMessage(true, false))
-	c.addContextFunc("sendTemplate", c.tmplSendTemplate)
-	c.addContextFunc("sendTemplateDM", c.tmplSendTemplateDM)
-	c.addContextFunc("sendMessageRetID", c.tmplSendMessage(true, true))
-	c.addContextFunc("sendMessageNoEscape", c.tmplSendMessage(false, false))
-	c.addContextFunc("sendMessageNoEscapeRetID", c.tmplSendMessage(false, true))
 	c.addContextFunc("editMessage", c.tmplEditMessage(true))
 	c.addContextFunc("editMessageNoEscape", c.tmplEditMessage(false))
+	c.addContextFunc("pinMessage", c.tmplPinMessage(false))
+	c.addContextFunc("publishMessage", c.tmplPublishMessage)
+	c.addContextFunc("publishResponse", c.tmplPublishResponse)
+	c.addContextFunc("sendDM", c.tmplSendDM)
+	c.addContextFunc("sendMessage", c.tmplSendMessage(true, false))
+	c.addContextFunc("sendMessageNoEscape", c.tmplSendMessage(false, false))
+	c.addContextFunc("sendMessageNoEscapeRetID", c.tmplSendMessage(false, true))
+	c.addContextFunc("sendMessageRetID", c.tmplSendMessage(true, true))
+	c.addContextFunc("sendTemplate", c.tmplSendTemplate)
+	c.addContextFunc("sendTemplateDM", c.tmplSendTemplateDM)
+	c.addContextFunc("unpinMessage", c.tmplPinMessage(true))
 
 	// Mentions
 	c.addContextFunc("mentionEveryone", c.tmplMentionEveryone)
 	c.addContextFunc("mentionHere", c.tmplMentionHere)
-	c.addContextFunc("mentionRoleName", c.tmplMentionRoleName)
 	c.addContextFunc("mentionRoleID", c.tmplMentionRoleID)
+	c.addContextFunc("mentionRoleName", c.tmplMentionRoleName)
 
 	// Role functions
-	c.addContextFunc("hasRoleName", c.tmplHasRoleName)
 	c.addContextFunc("hasRoleID", c.tmplHasRoleID)
+	c.addContextFunc("hasRoleName", c.tmplHasRoleName)
 
 	c.addContextFunc("addRoleID", c.tmplAddRoleID)
 	c.addContextFunc("removeRoleID", c.tmplRemoveRoleID)
 
+	c.addContextFunc("setRoles", c.tmplSetRoles)
 	c.addContextFunc("addRoleName", c.tmplAddRoleName)
 	c.addContextFunc("removeRoleName", c.tmplRemoveRoleName)
 
@@ -519,33 +636,55 @@ func baseContextFuncs(c *Context) {
 	c.addContextFunc("targetHasRoleID", c.tmplTargetHasRoleID)
 	c.addContextFunc("targetHasRoleName", c.tmplTargetHasRoleName)
 
-	c.addContextFunc("deleteResponse", c.tmplDelResponse)
-	c.addContextFunc("deleteTrigger", c.tmplDelTrigger)
-	c.addContextFunc("deleteMessage", c.tmplDelMessage)
-	c.addContextFunc("deleteMessageReaction", c.tmplDelMessageReaction)
-	c.addContextFunc("deleteAllMessageReactions", c.tmplDelAllMessageReactions)
-	c.addContextFunc("getMessage", c.tmplGetMessage)
-	c.addContextFunc("getMember", c.tmplGetMember)
-	c.addContextFunc("getChannel", c.tmplGetChannel)
+	// permission funcs
+	c.addContextFunc("hasPermissions", c.tmplHasPermissions)
+	c.addContextFunc("targetHasPermissions", c.tmplTargetHasPermissions)
+	c.addContextFunc("getTargetPermissionsIn", c.tmplGetTargetPermissionsIn)
+
+	c.addContextFunc("addMessageReactions", c.tmplAddMessageReactions)
 	c.addContextFunc("addReactions", c.tmplAddReactions)
 	c.addContextFunc("addResponseReactions", c.tmplAddResponseReactions)
-	c.addContextFunc("addMessageReactions", c.tmplAddMessageReactions)
+	c.addContextFunc("deleteAllMessageReactions", c.tmplDelAllMessageReactions)
+	c.addContextFunc("deleteMessage", c.tmplDelMessage)
+	c.addContextFunc("deleteMessageReaction", c.tmplDelMessageReaction)
+	c.addContextFunc("deleteResponse", c.tmplDelResponse)
+	c.addContextFunc("deleteTrigger", c.tmplDelTrigger)
+	c.addContextFunc("getChannel", c.tmplGetChannel)
+	c.addContextFunc("getChannelPins", c.tmplGetChannelPins(false))
+	c.addContextFunc("getChannelOrThread", c.tmplGetChannelOrThread)
+	c.addContextFunc("getMember", c.tmplGetMember)
+	c.addContextFunc("getMessage", c.tmplGetMessage)
+	c.addContextFunc("getPinCount", c.tmplGetChannelPins(true))
+	c.addContextFunc("getRole", c.tmplGetRole)
+	c.addContextFunc("getThread", c.tmplGetThread)
 
-	c.addContextFunc("currentUserCreated", c.tmplCurrentUserCreated)
+	// thread functions
+	c.addContextFunc("createThread", c.tmplCreateThread)
+	c.addContextFunc("deleteThread", c.tmplDeleteThread)
+	c.addContextFunc("addThreadMember", c.tmplThreadMemberAdd)
+	c.addContextFunc("removeThreadMember", c.tmplThreadMemberRemove)
+
+	// forum functions
+	c.addContextFunc("createForumPost", c.tmplCreateForumPost)
+	c.addContextFunc("deleteForumPost", c.tmplDeleteThread)
+
 	c.addContextFunc("currentUserAgeHuman", c.tmplCurrentUserAgeHuman)
 	c.addContextFunc("currentUserAgeMinutes", c.tmplCurrentUserAgeMinutes)
-	c.addContextFunc("sleep", c.tmplSleep)
+	c.addContextFunc("currentUserCreated", c.tmplCurrentUserCreated)
 	c.addContextFunc("reFind", c.reFind)
 	c.addContextFunc("reFindAll", c.reFindAll)
 	c.addContextFunc("reFindAllSubmatches", c.reFindAllSubmatches)
 	c.addContextFunc("reReplace", c.reReplace)
 	c.addContextFunc("reSplit", c.reSplit)
+	c.addContextFunc("sleep", c.tmplSleep)
 
-	c.addContextFunc("editChannelTopic", c.tmplEditChannelTopic)
 	c.addContextFunc("editChannelName", c.tmplEditChannelName)
+	c.addContextFunc("editChannelTopic", c.tmplEditChannelTopic)
+	c.addContextFunc("editNickname", c.tmplEditNickname)
 	c.addContextFunc("onlineCount", c.tmplOnlineCount)
 	c.addContextFunc("onlineCountBots", c.tmplOnlineCountBots)
-	c.addContextFunc("editNickname", c.tmplEditNickname)
+
+	c.addContextFunc("sort", c.tmplSort)
 }
 
 type limitedWriter struct {
@@ -593,15 +732,97 @@ func MaybeScheduledDeleteMessage(guildID, channelID, messageID int64, delaySecon
 	}
 }
 
+func isContainer(v interface{}) bool {
+	rv, _ := indirect(reflect.ValueOf(v))
+	switch rv.Kind() {
+	case reflect.Array, reflect.Slice, reflect.Map:
+		return true
+	default:
+		return false
+	}
+}
+
+// Cyclic value detection is modified from encoding/json/encode.go.
+const startDetectingCyclesAfter = 250
+
+type cyclicValueDetector struct {
+	ptrLevel uint
+	ptrSeen  map[interface{}]struct{}
+}
+
+func (c *cyclicValueDetector) Check(v reflect.Value) error {
+	v, _ = indirect(v)
+	switch v.Kind() {
+	case reflect.Map:
+		if c.ptrLevel++; c.ptrLevel > startDetectingCyclesAfter {
+			ptr := v.Pointer()
+			if _, ok := c.ptrSeen[ptr]; ok {
+				return fmt.Errorf("encountered a cycle via %s", v.Type())
+			}
+			c.ptrSeen[ptr] = struct{}{}
+		}
+
+		it := v.MapRange()
+		for it.Next() {
+			if err := c.Check(it.Value()); err != nil {
+				return err
+			}
+		}
+		c.ptrLevel--
+		return nil
+	case reflect.Array, reflect.Slice:
+		if c.ptrLevel++; c.ptrLevel > startDetectingCyclesAfter {
+			ptr := struct {
+				ptr uintptr
+				len int
+			}{v.Pointer(), v.Len()}
+			if _, ok := c.ptrSeen[ptr]; ok {
+				return fmt.Errorf("encountered a cycle via %s", v.Type())
+			}
+			c.ptrSeen[ptr] = struct{}{}
+		}
+
+		for i := 0; i < v.Len(); i++ {
+			elem := v.Index(i)
+			if err := c.Check(elem); err != nil {
+				return err
+			}
+		}
+		c.ptrLevel--
+		return nil
+	default:
+		return nil
+	}
+}
+
+func detectCyclicValue(v interface{}) error {
+	c := &cyclicValueDetector{ptrSeen: make(map[interface{}]struct{})}
+	return c.Check(reflect.ValueOf(v))
+}
+
 type Dict map[interface{}]interface{}
 
-func (d Dict) Set(key interface{}, value interface{}) string {
+func (d Dict) Set(key interface{}, value interface{}) (string, error) {
 	d[key] = value
-	return ""
+	if isContainer(value) {
+		if err := detectCyclicValue(d); err != nil {
+			return "", template.UncatchableError(err)
+		}
+	}
+	return "", nil
 }
 
 func (d Dict) Get(key interface{}) interface{} {
-	return d[key]
+	out, ok := d[key]
+	if !ok {
+		switch key.(type) {
+		case int:
+			out = d[ToInt64(key)]
+		case int64:
+			out = d[tmplToInt(key)]
+		}
+	}
+	return out
 }
 
 func (d Dict) Del(key interface{}) string {
@@ -609,11 +830,39 @@ func (d Dict) Del(key interface{}) string {
 	return ""
 }
 
+func (d Dict) HasKey(k interface{}) (ok bool) {
+	_, ok = d[k]
+	return
+}
+
+func (d Dict) MarshalJSON() ([]byte, error) {
+	md := make(map[string]interface{})
+	for k, v := range d {
+		krv := reflect.ValueOf(k)
+		switch krv.Kind() {
+		case reflect.String:
+			md[krv.String()] = v
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			md[strconv.FormatInt(krv.Int(), 10)] = v
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+			md[strconv.FormatUint(krv.Uint(), 10)] = v
+		default:
+			return nil, fmt.Errorf("cannot encode dict with key type %s; only string and integer keys are supported", krv.Type())
+		}
+	}
+	return json.Marshal(md)
+}
+
 type SDict map[string]interface{}
 
-func (d SDict) Set(key string, value interface{}) string {
+func (d SDict) Set(key string, value interface{}) (string, error) {
 	d[key] = value
-	return ""
+	if isContainer(value) {
+		if err := detectCyclicValue(d); err != nil {
+			return "", template.UncatchableError(err)
+		}
+	}
+	return "", nil
 }
 
 func (d SDict) Get(key string) interface{} {
@@ -623,6 +872,11 @@ func (d SDict) Get(key string) interface{} {
 func (d SDict) Del(key string) string {
 	delete(d, key)
 	return ""
+}
+
+func (d SDict) HasKey(k string) (ok bool) {
+	_, ok = d[k]
+	return
 }
 
 type Slice []interface{}
@@ -640,7 +894,6 @@ func (s Slice) Append(item interface{}) (interface{}, error) {
 		result := reflect.Append(reflect.ValueOf(&s).Elem(), reflect.ValueOf(v))
 		return result.Interface(), nil
 	}
-
 }
 
 func (s Slice) Set(index int, item interface{}) (string, error) {
@@ -649,11 +902,16 @@ func (s Slice) Set(index int, item interface{}) (string, error) {
 	}
 
 	s[index] = item
+	if isContainer(item) {
+		if err := detectCyclicValue(s); err != nil {
+			return "", template.UncatchableError(err)
+		}
+	}
 	return "", nil
 }
 
 func (s Slice) AppendSlice(slice interface{}) (interface{}, error) {
-	val := reflect.ValueOf(slice)
+	val, _ := indirect(reflect.ValueOf(slice))
 	switch val.Kind() {
 	case reflect.Slice, reflect.Array:
 	// this is valid
@@ -707,4 +965,24 @@ func (s Slice) StringSlice(flag ...bool) interface{} {
 	}
 
 	return StringSlice
+}
+
+func withOutputLimit(f func(...interface{}) string, limit int) func(...interface{}) (string, error) {
+	return func(args ...interface{}) (string, error) {
+		out := f(args...)
+		if len(out) > limit {
+			return "", fmt.Errorf("string grew too long: length %d (max %d)", len(out), limit)
+		}
+		return out, nil
+	}
+}
+
+func withOutputLimitF(f func(string, ...interface{}) string, limit int) func(string, ...interface{}) (string, error) {
+	return func(format string, args ...interface{}) (string, error) {
+		out := f(format, args...)
+		if len(out) > limit {
+			return "", fmt.Errorf("string grew too long: length %d (max %d)", len(out), limit)
+		}
+		return out, nil
+	}
 }

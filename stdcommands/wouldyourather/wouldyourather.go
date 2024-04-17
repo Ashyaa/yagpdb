@@ -2,29 +2,53 @@ package wouldyourather
 
 import (
 	"fmt"
-	"net/http"
+	"math/rand"
 
-	"emperror.dev/errors"
-	"github.com/PuerkitoBio/goquery"
-	"github.com/jonas747/dcmd/v2"
-	"github.com/jonas747/yagpdb/commands"
-	"github.com/jonas747/yagpdb/common"
+	"github.com/botlabs-gg/yagpdb/v2/commands"
+	"github.com/botlabs-gg/yagpdb/v2/common"
+	"github.com/botlabs-gg/yagpdb/v2/lib/dcmd"
+	"github.com/botlabs-gg/yagpdb/v2/lib/discordgo"
 )
+
+type WouldYouRather struct {
+	OptionA string
+	OptionB string
+}
+
+func randomQuestion() WouldYouRather {
+	return Questions[rand.Intn(len(Questions))]
+}
 
 var Command = &commands.YAGCommand{
 	CmdCategory: commands.CategoryFun,
 	Name:        "WouldYouRather",
 	Aliases:     []string{"wyr"},
 	Description: "Get presented with 2 options.",
+	ArgSwitches: []*dcmd.ArgDef{
+		{Name: "raw", Help: "Raw output"},
+	},
 	RunFunc: func(data *dcmd.Data) (interface{}, error) {
 
-		q1, q2, err := wouldYouRather()
-		if err != nil {
-			return nil, err
+		question := randomQuestion()
+
+		wyrDescription := fmt.Sprintf("**EITHER...**\n🇦 %s\n\n **OR...**\n🇧 %s", question.OptionA, question.OptionB)
+
+		if data.Switches["raw"].Value != nil && data.Switches["raw"].Value.(bool) {
+			return wyrDescription, nil
 		}
 
-		content := fmt.Sprintf("**Would you rather** (*<http://either.io>*)\n🇦 %s\n **OR**\n🇧 %s", q1, q2)
-		msg, err := common.BotSession.ChannelMessageSend(data.ChannelID, content)
+		embed := &discordgo.MessageEmbed{
+			Description: wyrDescription,
+			Author: &discordgo.MessageEmbedAuthor{
+				Name: "Would you rather...",
+			},
+			Footer: &discordgo.MessageEmbedFooter{
+				Text: fmt.Sprintf("Requested by: %s", data.Author.String()),
+			},
+			Color: rand.Intn(16777215),
+		}
+
+		msg, err := common.BotSession.ChannelMessageSendEmbed(data.ChannelID, embed)
 		if err != nil {
 			return nil, err
 		}
@@ -37,32 +61,4 @@ var Command = &commands.YAGCommand{
 
 		return nil, nil
 	},
-}
-
-func wouldYouRather() (q1 string, q2 string, err error) {
-	req, err := http.NewRequest("GET", "http://either.io/", nil)
-	if err != nil {
-		panic(err)
-	}
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return
-	}
-
-	doc, err := goquery.NewDocumentFromResponse(resp)
-	if err != nil {
-		return
-	}
-
-	r1 := doc.Find("div.result.result-1 > .option-text")
-	r2 := doc.Find("div.result.result-2 > .option-text")
-
-	if len(r1.Nodes) < 1 || len(r2.Nodes) < 1 {
-		return "", "", errors.New("Failed finding questions, format may have changed.")
-	}
-
-	q1 = r1.Nodes[0].FirstChild.Data
-	q2 = r2.Nodes[0].FirstChild.Data
-	return
 }

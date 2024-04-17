@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/jonas747/dcmd/v2"
-	"github.com/jonas747/dstate/v2"
-	"github.com/jonas747/yagpdb/bot"
-	"github.com/jonas747/yagpdb/commands"
+	"github.com/botlabs-gg/yagpdb/v2/bot"
+	"github.com/botlabs-gg/yagpdb/v2/commands"
+	"github.com/botlabs-gg/yagpdb/v2/lib/dcmd"
+	"github.com/botlabs-gg/yagpdb/v2/lib/dstate"
 )
 
 var Command = &commands.YAGCommand{
@@ -41,9 +41,12 @@ func cmdFuncTopCommands(data *dcmd.Data) (interface{}, error) {
 	fastResult := make(map[string]int)
 
 	if all {
-		guilds := bot.State.GuildsSlice(true)
-		for _, g := range guilds {
-			checkGuild(fastResult, g)
+		processShards := bot.ReadyTracker.GetProcessShards()
+		for _, shard := range processShards {
+			guilds := bot.State.GetShardGuilds(int64(shard))
+			for _, g := range guilds {
+				checkGuild(fastResult, g)
+			}
 		}
 	} else {
 		checkGuild(fastResult, data.GuildData.GS)
@@ -63,7 +66,13 @@ func cmdFuncTopCommands(data *dcmd.Data) (interface{}, error) {
 	})
 
 	// display it
-	out := "```\nTop games being played currently\n#    Count -  Game\n"
+	out := ""
+	if len(fullResult) > 0 {
+		out = "```\nTop games being played currently\n#    Count -  Game\n"
+	} else {
+		out = "```\nNo Games being played currently"
+	}
+
 	for k, result := range fullResult {
 		out += fmt.Sprintf("#%02d: %5d - %s\n", k+1, result.Count, result.Game)
 		if k >= 20 {
@@ -75,22 +84,24 @@ func cmdFuncTopCommands(data *dcmd.Data) (interface{}, error) {
 	return out, nil
 }
 
-func checkGuild(dst map[string]int, gs *dstate.GuildState) {
-	gs.RLock()
-	defer gs.RUnlock()
+func checkGuild(dst map[string]int, gs *dstate.GuildSet) {
 
-	for _, ms := range gs.Members {
-		if !ms.PresenceSet || ms.PresenceGame == nil || ms.PresenceGame.Name == "" {
-			continue
+	bot.State.IterateMembers(gs.ID, func(chunk []*dstate.MemberState) bool {
+		for _, ms := range chunk {
+			if ms.Presence == nil || ms.Presence.Game == nil || ms.Presence.Game.Name == "" {
+				continue
+			}
+
+			if ms.User.Bot {
+				continue
+			}
+
+			name := ms.Presence.Game.Name
+			dst[name]++
 		}
 
-		if ms.Bot {
-			continue
-		}
-
-		name := ms.PresenceGame.Name
-		dst[name]++
-	}
+		return true
+	})
 }
 
 type TopGameResult struct {

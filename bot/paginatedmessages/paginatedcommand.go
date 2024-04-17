@@ -1,8 +1,8 @@
 package paginatedmessages
 
 import (
-	"github.com/jonas747/dcmd/v2"
-	"github.com/jonas747/discordgo"
+	"github.com/botlabs-gg/yagpdb/v2/lib/dcmd"
+	"github.com/botlabs-gg/yagpdb/v2/lib/discordgo"
 )
 
 type CtxKey int

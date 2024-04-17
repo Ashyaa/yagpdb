@@ -6,27 +6,38 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"unicode/utf8"
 
 	"emperror.dev/errors"
-	"github.com/jonas747/discordgo"
-	"github.com/jonas747/dstate/v2"
-	"github.com/jonas747/yagpdb/common"
-	"github.com/jonas747/yagpdb/common/featureflags"
-	"github.com/jonas747/yagpdb/customcommands/models"
-	"github.com/jonas747/yagpdb/premium"
-	"github.com/jonas747/yagpdb/web"
+	"github.com/botlabs-gg/yagpdb/v2/common"
+	"github.com/botlabs-gg/yagpdb/v2/common/featureflags"
+	"github.com/botlabs-gg/yagpdb/v2/customcommands/models"
+	"github.com/botlabs-gg/yagpdb/v2/lib/discordgo"
+	"github.com/botlabs-gg/yagpdb/v2/lib/dstate"
+	"github.com/botlabs-gg/yagpdb/v2/premium"
+	"github.com/botlabs-gg/yagpdb/v2/web"
 	"github.com/karlseguin/ccache"
 	"github.com/mediocregopher/radix/v3"
-	"github.com/volatiletech/null"
-	"github.com/volatiletech/sqlboiler/queries/qm"
+	"github.com/volatiletech/null/v8"
+	"github.com/volatiletech/sqlboiler/v4/queries/qm"
 )
 
 var (
 	RegexCache = *ccache.New(ccache.Configure())
 	logger     = common.GetPluginLogger(&Plugin{})
+)
+
+// Setting it to 1 Month approx
+const (
+	MinIntervalTriggerDurationMinutes = 5
+	MinIntervalTriggerDurationHours   = 1
+	MaxIntervalTriggerDurationHours   = 744
+	MaxIntervalTriggerDurationMinutes = 44640
+
+	dbPageMaxDisplayLength = 64
 )
 
 func KeyCommands(guildID int64) string { return "custom_commands:" + discordgo.StrID(guildID) }
@@ -62,8 +73,7 @@ const (
 	CommandTriggerRegex      CommandTriggerType = 3
 	CommandTriggerExact      CommandTriggerType = 4
 	CommandTriggerReaction   CommandTriggerType = 6
-
-	CommandTriggerInterval CommandTriggerType = 5
+	CommandTriggerInterval   CommandTriggerType = 5
 )
 
 var (
@@ -75,6 +85,7 @@ var (
 		CommandTriggerExact,
 		CommandTriggerInterval,
 		CommandTriggerReaction,
+		CommandTriggerNone,
 	}
 
 	triggerStrings = map[CommandTriggerType]string{
@@ -85,6 +96,7 @@ var (
 		CommandTriggerExact:      "Exact",
 		CommandTriggerInterval:   "Interval",
 		CommandTriggerReaction:   "Reaction",
+		CommandTriggerNone:       "None",
 	}
 )
 
@@ -107,6 +119,10 @@ type CustomCommand struct {
 	Responses     []string `json:"responses" schema:"responses" valid:"template,10000"`
 	CaseSensitive bool     `json:"case_sensitive" schema:"case_sensitive"`
 	ID            int64    `json:"id"`
+	Name          string   `json:"name" schema:"name" valid:",0,100"`
+	IsEnabled     bool     `json:"is_enabled" schema:"is_enabled"`
+	Public        bool     `json:"public" schema:"public"`
+	PublicID      string   `json:"public_id" schema:"public_id"`
 
 	ContextChannel int64 `schema:"context_channel" valid:"channel,true"`
 
@@ -121,8 +137,9 @@ type CustomCommand struct {
 	Channels        []int64 `json:"channels" schema:"channels"`
 
 	// If set, then one of the following channels are required, otherwise they are ignored
-	RequireRoles bool    `json:"require_roles" schema:"require_roles"`
-	Roles        []int64 `json:"roles" schema:"roles"`
+	RequireRoles  bool    `json:"require_roles" schema:"require_roles"`
+	Roles         []int64 `json:"roles" schema:"roles"`
+	TriggerOnEdit bool    `json:"trigger_on_edit" schema:"trigger_on_edit"`
 
 	GroupID int64
 
@@ -160,8 +177,13 @@ func (cc *CustomCommand) Validate(tmpl web.TemplateData) (ok bool) {
 		return false
 	}
 
-	if cc.TriggerTypeForm == "interval_minutes" && cc.TimeTriggerInterval < 5 {
-		tmpl.AddAlerts(web.ErrorAlert("Minimum interval is now 5 minutes (was recently from 1)"))
+	if cc.TriggerTypeForm == "interval_minutes" && (cc.TimeTriggerInterval < MinIntervalTriggerDurationMinutes || cc.TimeTriggerInterval > MaxIntervalTriggerDurationMinutes) {
+		tmpl.AddAlerts(web.ErrorAlert(fmt.Sprintf("Minute interval can be between %v and %v", MinIntervalTriggerDurationMinutes, MaxIntervalTriggerDurationMinutes)))
+		return false
+	}
+
+	if cc.TriggerTypeForm == "interval_hours" && (cc.TimeTriggerInterval < MinIntervalTriggerDurationHours || cc.TimeTriggerInterval > MaxIntervalTriggerDurationHours) {
+		tmpl.AddAlerts(web.ErrorAlert(fmt.Sprintf("Hourly interval can be between %v and %v", MinIntervalTriggerDurationHours, MaxIntervalTriggerDurationHours)))
 		return false
 	}
 
@@ -173,6 +195,8 @@ func (cc *CustomCommand) ToDBModel() *models.CustomCommand {
 		TriggerType:              int(cc.TriggerType),
 		TextTrigger:              cc.Trigger,
 		TextTriggerCaseSensitive: cc.CaseSensitive,
+		Public:                   cc.Public,
+		PublicID:                 cc.PublicID,
 
 		Channels:              cc.Channels,
 		ChannelsWhitelistMode: cc.RequireChannels,
@@ -188,7 +212,9 @@ func (cc *CustomCommand) ToDBModel() *models.CustomCommand {
 
 		Responses: cc.Responses,
 
-		ShowErrors: cc.ShowErrors,
+		ShowErrors:    cc.ShowErrors,
+		Disabled:      !cc.IsEnabled,
+		TriggerOnEdit: cc.TriggerOnEdit,
 	}
 
 	if cc.TimeTriggerExcludingDays == nil {
@@ -201,6 +227,12 @@ func (cc *CustomCommand) ToDBModel() *models.CustomCommand {
 
 	if cc.GroupID != 0 {
 		pqCommand.GroupID = null.Int64From(cc.GroupID)
+	}
+
+	if cc.Name != "" {
+		pqCommand.Name = null.StringFrom(cc.Name)
+	} else {
+		pqCommand.Name = null.NewString("", false)
 	}
 
 	if cc.TriggerTypeForm == "interval_hours" {
@@ -248,11 +280,11 @@ func CmdRunsInChannel(cc *models.CustomCommand, channel int64) bool {
 func CmdRunsForUser(cc *models.CustomCommand, ms *dstate.MemberState) bool {
 	if cc.GroupID.Valid {
 		// check group restrictions
-		if common.ContainsInt64SliceOneOf(cc.R.Group.IgnoreRoles, ms.Roles) {
+		if common.ContainsInt64SliceOneOf(cc.R.Group.IgnoreRoles, ms.Member.Roles) {
 			return false
 		}
 
-		if len(cc.R.Group.WhitelistRoles) > 0 && !common.ContainsInt64SliceOneOf(cc.R.Group.WhitelistRoles, ms.Roles) {
+		if len(cc.R.Group.WhitelistRoles) > 0 && !common.ContainsInt64SliceOneOf(cc.R.Group.WhitelistRoles, ms.Member.Roles) {
 			return false
 		}
 	}
@@ -268,7 +300,7 @@ func CmdRunsForUser(cc *models.CustomCommand, ms *dstate.MemberState) bool {
 	}
 
 	for _, v := range cc.Roles {
-		if common.ContainsInt64Slice(ms.Roles, v) {
+		if common.ContainsInt64Slice(ms.Member.Roles, v) {
 			if cc.RolesWhitelistMode {
 				return true
 			}
@@ -405,4 +437,55 @@ func (p *Plugin) AllFeatureFlags() []string {
 	return []string{
 		featureFlagHasCommands, // set if this server has any custom commands at all
 	}
+}
+
+func getDatabaseEntries(ctx context.Context, guildID int64, page int, queryType, query string, limit int) (models.TemplatesUserDatabaseSlice, int64, error) {
+	qms := []qm.QueryMod{
+		models.TemplatesUserDatabaseWhere.GuildID.EQ(guildID),
+	}
+
+	if len(query) > 0 {
+		switch queryType {
+		case "id":
+			qms = append(qms, qm.Where("id = ?", query))
+		case "user_id":
+			qms = append(qms, qm.Where("user_id = ?", query))
+		case "key":
+			qms = append(qms, qm.Where("key ILIKE ?", query))
+		}
+	}
+
+	count, err := models.TemplatesUserDatabases(qms...).CountG(ctx)
+	if int64(page) > (count / 100) {
+		page = int(math.Ceil(float64(count) / 100))
+	}
+	if page > 1 {
+		qms = append(qms, qm.Offset((limit * (page - 1))))
+	}
+	qms = append(qms, qm.OrderBy("id desc"), qm.Limit(limit))
+	entries, err := models.TemplatesUserDatabases(qms...).AllG(ctx)
+	return entries, count, err
+}
+
+func convertEntries(result models.TemplatesUserDatabaseSlice) []*LightDBEntry {
+	entries := make([]*LightDBEntry, 0, len(result))
+	for _, v := range result {
+		converted, err := ToLightDBEntry(v)
+		if err != nil {
+			logger.WithError(err).Warn("[cc/web] failed converting to light db entry")
+			continue
+		}
+
+		b, err := json.Marshal(converted.Value)
+		if err != nil {
+			logger.WithError(err).Warn("[cc/web] failed converting to light db entry")
+			continue
+		}
+
+		converted.Value = common.CutStringShort(string(b), dbPageMaxDisplayLength)
+
+		entries = append(entries, converted)
+	}
+
+	return entries
 }
