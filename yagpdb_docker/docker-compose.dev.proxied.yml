@@ -6,6 +6,7 @@ volumes:
   cert_cache:
   soundboard:
 
+
 networks:
   default:
   proxy-tier:
@@ -21,7 +22,7 @@ services:
       dockerfile: yagpdb_docker/Dockerfile
     restart: unless-stopped
     command:
-      - "/app/yagpdb"
+      # - "/app/yagpdb"
       - "-all"
       - "-pa"
       - "-exthttps=true"
