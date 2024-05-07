@@ -86,7 +86,11 @@ var cmds = []*commands.YAGCommand{
 				}
 			}
 
-			_, err := NewReminder(parsed.Author.ID, parsed.GuildData.GS.ID, id, parsed.Args[1].Str(), when)
+			var gid int64 = -1
+			if parsed.GuildData != nil {
+				gid = parsed.GuildData.GS.ID
+			}
+			_, err := NewReminder(parsed.Author.ID, gid, id, parsed.Args[1].Str(), when)
 			if err != nil {
 				return nil, err
 			}
@@ -128,12 +132,14 @@ var cmds = []*commands.YAGCommand{
 		IsResponseEphemeral: true,
 		RunInDM:             true,
 		RunFunc: func(parsed *dcmd.Data) (interface{}, error) {
-			ok, err := bot.AdminOrPermMS(parsed.GuildData.GS.ID, parsed.ChannelID, parsed.GuildData.MS, discordgo.PermissionManageChannels)
-			if err != nil {
-				return nil, err
-			}
-			if !ok {
-				return "You do not have access to this command (requires manage channel permission)", nil
+			if parsed.GuildData != nil {
+				ok, err := bot.AdminOrPermMS(parsed.GuildData.GS.ID, parsed.ChannelID, parsed.GuildData.MS, discordgo.PermissionManageChannels)
+				if err != nil {
+					return nil, err
+				}
+				if !ok {
+					return "You do not have access to this command (requires manage channel permission)", nil
+				}
 			}
 
 			currentReminders, err := GetChannelReminders(parsed.ChannelID)

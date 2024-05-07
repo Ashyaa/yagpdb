@@ -175,17 +175,19 @@ func (se *ScheduledEvents) check() {
 			continue
 		}
 
-		skip, remove := se.checkShouldSkipRemove(id, guildID)
-		if skip && !remove {
-			numSkipped++
-			continue
-		}
+		if guildID > 0 {
+			skip, remove := se.checkShouldSkipRemove(id, guildID)
+			if skip && !remove {
+				numSkipped++
+				continue
+			}
 
-		if remove {
-			logger.WithField("id", id).WithField("guild", guildID).Info("removing event entirely since it's not on this bot anymore")
-			go se.markDoneID(id, guildID, bot.ErrGuildNotOnProcess)
-			numSkipped++
-			continue
+			if remove {
+				logger.WithField("id", id).WithField("guild", guildID).Info("removing event entirely since it's not on this bot anymore")
+				go se.markDoneID(id, guildID, bot.ErrGuildNotOnProcess)
+				numSkipped++
+				continue
+			}
 		}
 
 		isProcessed := false
