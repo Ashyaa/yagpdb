@@ -3,6 +3,7 @@ package reminders
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/botlabs-gg/yagpdb/v2/lib/discordgo"
 	"github.com/botlabs-gg/yagpdb/v2/lib/dstate"
 	"github.com/jinzhu/gorm"
+	"github.com/lithammer/fuzzysearch/fuzzy"
 )
 
 var logger = common.GetPluginLogger(&Plugin{})
@@ -41,12 +43,45 @@ var cmds = []*commands.YAGCommand{
 		Name:         "Remindme",
 		Description:  "Schedules a reminder, example: 'remindme 1h30min are you still alive?'",
 		Aliases:      []string{"remind", "reminder"},
-		RequiredArgs: 2,
+		RequiredArgs: 1,
 		Arguments: []*dcmd.ArgDef{
-			{Name: "Time", Type: &commands.DurationArg{}},
-			{Name: "Message", Type: dcmd.String},
+			{Name: "Message", Type: dcmd.String, Help: "Message to display"},
 		},
 		ArgSwitches: []*dcmd.ArgDef{
+			{Name: "time", Type: &commands.DurationArg{}, Help: "Relative reminder delay e.g. 90s for \"in 1 minute and 30s\". Exclusive with absolute time fields."},
+			{Name: "year", Type: &dcmd.IntArg{}, Help: "Year of the reminder. Defaults to current year. Exclusive with time."},
+			{Name: "month", Type: &dcmd.IntArg{}, Help: "Month of the reminder (1-12). Defaults to current month. Exclusive with time."},
+			{Name: "day", Type: &dcmd.IntArg{}, Help: "Day of the reminder (1-31). Defaults to current day. Exclusive with time."},
+			{Name: "hour", Type: &dcmd.IntArg{}, Help: "Hour of the reminder (0-23). Defaults to current hour. Exclusive with time."},
+			{Name: "minute", Type: &dcmd.IntArg{}, Help: "Minute of the reminder (0-59). Defaults to 0. Exclusive with time."},
+			{Name: "second", Type: &dcmd.IntArg{}, Help: "Second of the reminder (0-59). Defaults to 0. Exclusive with time."},
+			{
+				Name: "zone", Type: &dcmd.StringArg{},
+				Help: "Timezone of the reminder date & time. Defaults to GMT. Exclusive with time.",
+				// Default: "GMT",
+				// Choices: GetTimeZoneChoices(),
+				AutocompleteFunc: func(data *dcmd.Data, arg *dcmd.ParsedArg) (choices []*discordgo.ApplicationCommandOptionChoice, err error) {
+					candidate := arg.Value.(string)
+					matches := fuzzy.RankFindNormalizedFold(candidate, TimeZoneChoices)
+					sort.Sort(matches)
+
+					cap := len(matches)
+					if cap > 25 {
+						cap = 25
+					}
+					for _, match := range matches {
+						choices = append(choices, &discordgo.ApplicationCommandOptionChoice{
+							Name:  match.Target,
+							Value: match.Target,
+						})
+						if len(choices) == cap {
+							break
+						}
+					}
+
+					return choices, nil
+				},
+			},
 			{Name: "channel", Type: dcmd.Channel},
 		},
 		SlashCommandEnabled: true,
@@ -54,25 +89,41 @@ var cmds = []*commands.YAGCommand{
 		RunInDM:             true,
 		RunFunc: func(parsed *dcmd.Data) (interface{}, error) {
 			currentReminders, _ := GetUserReminders(parsed.Author.ID)
-			if len(currentReminders) >= 25 {
-				return "You can have a maximum of 25 active reminders, list your reminders with the `reminders` command", nil
+			logger.Info("checking reminders limit")
+			if len(currentReminders) >= 100 {
+				return "You can have a maximum of 100 active reminders, list your reminders with the `reminders` command", nil
 			}
 
+			logger.Info("checking reminder author")
 			if parsed.Author.Bot {
 				return nil, errors.New("cannot create reminder for Bots, you're most likely trying to use `execAdmin` to create a reminder, use `exec` instead")
 			}
 
-			fromNow := parsed.Args[0].Value.(time.Duration)
+			logger.Info("relative or absolute?")
+			rel, err := usesRelativeTime(parsed)
+			if err != nil {
+				return err.Error(), nil
+			}
+			var when time.Time
+			var durString string
+			if rel {
+				logger.Info("parsing relative")
+				when, durString, err = parseRelativeTime(parsed)
+			} else {
+				logger.Info("parsing absolute")
+				when, durString, err = parseAbsoluteTime(parsed)
+			}
+			if err != nil {
+				return err.Error(), nil
+			}
 
-			durString := common.HumanizeDuration(common.DurationPrecisionSeconds, fromNow)
-			when := time.Now().Add(fromNow)
-			tUnix := fmt.Sprint(when.Unix())
-
-			if when.After(time.Now().Add(time.Hour * 24 * 366)) {
-				return "Can be max 365 days from now...", nil
+			logger.Info("checking relative time < 10y")
+			if when.After(time.Now().Add(time.Hour * 24 * 365 * 10)) {
+				return "Can be max 10 years from now.", nil
 			}
 
 			id := parsed.ChannelID
+			logger.Info("checking channel")
 			if c := parsed.Switch("channel"); c.Value != nil {
 				id = c.Value.(*dstate.ChannelState).ID
 
@@ -87,15 +138,15 @@ var cmds = []*commands.YAGCommand{
 			}
 
 			var gid int64 = -1
+			logger.Info("checking if in DM")
 			if parsed.GuildData != nil {
 				gid = parsed.GuildData.GS.ID
 			}
-			_, err := NewReminder(parsed.Author.ID, gid, id, parsed.Args[1].Str(), when)
+			_, err = NewReminder(parsed.Author.ID, gid, id, parsed.Args[0].Str(), when)
 			if err != nil {
 				return nil, err
 			}
-
-			return "Set a reminder in " + durString + " from now (<t:" + tUnix + ":f>)\nView reminders with the `reminders` command", nil
+			return "Set a reminder in " + durString + " from now (<t:" + fmt.Sprint(when.Unix()) + ":f>)\nView reminders with the `reminders` command", nil
 		},
 	},
 	{
@@ -241,6 +292,118 @@ var cmds = []*commands.YAGCommand{
 			return delMsg, nil
 		},
 	},
+}
+
+var absoluteTimeFields = []string{
+	"year",
+	"month",
+	"day",
+	"hour",
+	"minute",
+	"second",
+	"zone",
+}
+
+func parseRelativeTime(parsed *dcmd.Data) (time.Time, string, error) {
+	fromNow := parsed.Switch("time").Value.(time.Duration)
+
+	durString := common.HumanizeDuration(common.DurationPrecisionSeconds, fromNow)
+	when := time.Now().Add(fromNow)
+
+	return when, durString, nil
+}
+
+func parseAbsoluteTime(parsed *dcmd.Data) (time.Time, string, error) {
+	var year, day, hour, minute, second int
+	var month time.Month
+
+	tz := "GMT"
+	if raw := parsed.Switch("zone"); raw.Value != nil {
+		tz = raw.Value.(string)
+	}
+
+	location, err := time.LoadLocation(tz)
+	if err != nil {
+		return time.Time{}, "", fmt.Errorf("Invalid timezone: %s", tz)
+	}
+
+	now := time.Now().In(location)
+
+	if raw := parsed.Switch("year"); raw.Value != nil {
+		year = int(raw.Value.(int64))
+		if year < now.Year() {
+			return time.Time{}, "", fmt.Errorf("Year %d is in the past", year)
+		}
+	} else {
+		year = now.Year()
+	}
+	if raw := parsed.Switch("month"); raw.Value != nil {
+		month = time.Month(int(raw.Value.(int64)))
+		if month < 1 || month > 12 {
+			return time.Time{}, "", fmt.Errorf("Invalid month: %d", month)
+		}
+	} else {
+		month = now.Month()
+	}
+	if raw := parsed.Switch("day"); raw.Value != nil {
+		day = int(raw.Value.(int64))
+		if day < 1 || day > 31 {
+			return time.Time{}, "", fmt.Errorf("Invalid day: %d", day)
+		}
+	} else {
+		day = now.Day()
+	}
+	if raw := parsed.Switch("hour"); raw.Value != nil {
+		hour = int(raw.Value.(int64))
+		if hour < 0 || hour > 23 {
+			return time.Time{}, "", fmt.Errorf("Invalid hour: %d", hour)
+		}
+	} else {
+		hour = now.Hour()
+	}
+	if raw := parsed.Switch("minute"); raw.Value != nil {
+		minute = int(raw.Value.(int64))
+		if minute < 0 || minute > 59 {
+			return time.Time{}, "", fmt.Errorf("Invalid minute: %d", minute)
+		}
+	} else {
+		minute = 0
+	}
+	if raw := parsed.Switch("second"); raw.Value != nil {
+		second = int(raw.Value.(int64))
+		if second < 0 || second > 59 {
+			return time.Time{}, "", fmt.Errorf("Invalid second: %d", second)
+		}
+	} else {
+		second = 0
+	}
+
+	when := time.Date(year, month, day, hour, minute, second, 0, location)
+
+	if now.After(when) {
+		return time.Time{}, "", fmt.Errorf("%s is in the past", when)
+	}
+	fromNow := when.Sub(now)
+
+	durString := common.HumanizeDuration(common.DurationPrecisionSeconds, fromNow)
+
+	return when, durString, nil
+}
+
+func usesRelativeTime(parsed *dcmd.Data) (bool, error) {
+	relative := parsed.Switch("time").Value != nil
+	absolute := false
+	for _, field := range absoluteTimeFields {
+		fieldUsed := parsed.Switch(field) != nil
+		if relative && fieldUsed {
+			return false, fmt.Errorf("Exclusive fields \"time\" and \"%s\" cannot be used together.", field)
+		}
+		absolute = absolute || fieldUsed
+	}
+	if !relative && !absolute {
+		return false, fmt.Errorf("No relative or absolute time given.")
+	}
+	return relative, nil
 }
 
 func stringReminders(reminders []*Reminder, displayUsernames bool) string {

@@ -183,6 +183,11 @@ func (yc *YAGCommand) Run(data *dcmd.Data) (interface{}, error) {
 					return arg.Def.AutocompleteFunc(data, arg)
 				}
 			}
+			for _, arg := range data.Switches {
+				if strings.EqualFold(arg.Def.Name, v.Name) {
+					return arg.Def.AutocompleteFunc(data, arg)
+				}
+			}
 		}
 		return []*discordgo.ApplicationCommandOptionChoice{}, nil // fallback in case something goes wrong so the user doesn't see failed
 	}
