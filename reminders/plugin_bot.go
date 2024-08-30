@@ -394,7 +394,7 @@ func usesRelativeTime(parsed *dcmd.Data) (bool, error) {
 	relative := parsed.Switch("time").Value != nil
 	absolute := false
 	for _, field := range absoluteTimeFields {
-		fieldUsed := parsed.Switch(field) != nil
+		fieldUsed := parsed.Switch(field).Value != nil
 		if relative && fieldUsed {
 			return false, fmt.Errorf("Exclusive fields \"time\" and \"%s\" cannot be used together.", field)
 		}
